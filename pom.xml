@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.github.yaotj</groupId>
+    <artifactId>facet-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>Facet</name>
+    <description>统一权限内核：ACL / RBAC / ABAC / ReBAC 编译到同一份 IR</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>25</maven.compiler.release>
+
+        <!--
+          3.14.0 在 Maven 4 下会抛 "Unsupported class file major version 69"：
+          它内置的 ASM 读不懂 Java 25 的 class 文件，而 Maven 4 走的模块描述符解析路径
+          会触发这段代码（Maven 3.9 不触发，所以同一份 pom 在 3.9.10 下能过）。
+        -->
+        <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.5.3</maven-surefire-plugin.version>
+    </properties>
+
+    <modules>
+        <!-- 内核：IR + 求值器 + 端口。依赖仅 java.base -->
+        <module>facet-core</module>
+
+        <!-- 编译前端：各模型的书写方式 -> Perm IR。单向依赖 core -->
+        <module>facet-dsl-rebac</module>
+        <module>facet-dsl-rbac</module>
+        <module>facet-dsl-abac</module>
+
+        <!-- driven 适配器 -->
+        <module>facet-store-memory</module>
+        <module>facet-fanout-structured</module>
+
+        <!-- driving 适配器 -->
+        <module>facet-pdp-http</module>
+
+        <!-- 判定矩阵 golden file 的测试基建 -->
+        <module>facet-testkit</module>
+    </modules>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.github.yaotj</groupId>
+                <artifactId>facet-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yaotj</groupId>
+                <artifactId>facet-store-memory</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.yaotj</groupId>
+                <artifactId>facet-testkit</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

@@ -1,0 +1,10 @@
+# Facet 用 Maven 4，其余项目继续走全局 mise 里的 3.9.x。
+#
+# 为什么不写成 [tools] maven = "4.0.0-rc-6"：mise 的三个 maven 后端
+# （aqua:apache/maven、asdf:mise-plugins/mise-maven、vfox:mise-plugins/vfox-maven）
+# 都只收录 GA 版本，ls-remote 最高到 3.9.x，rc 装不了。所以改成注入手工解压的发行包。
+# 等 4.0.0 GA 之后，这整段可以换成 [tools] 一行，并删掉手工目录。
+
+[env]
+MAVEN_HOME = "/Users/tuanjie/.local/apache-maven-4.0.0-rc-6"
+_.path = ["/Users/tuanjie/.local/apache-maven-4.0.0-rc-6/bin"]

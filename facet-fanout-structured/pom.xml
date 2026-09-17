@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.yaotj</groupId>
+        <artifactId>facet-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>facet-fanout-structured</artifactId>
+    <name>Facet Fanout :: Structured Concurrency</name>
+    <description>用结构化并发实现扇出。整个工程唯一带 --enable-preview 的模块。</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-core</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              StructuredTaskScope 在 JDK 25 仍是 preview（第五轮），且它的 API 已经改过几次。
+              把 preview 关进这一个模块，内核就能一直停在 release 级 API 上；
+              下次 API 再变，只有这里要改。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <compilerArgs>
+                        <arg>--enable-preview</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>--enable-preview</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

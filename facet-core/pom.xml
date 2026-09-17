@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.yaotj</groupId>
+        <artifactId>facet-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>facet-core</artifactId>
+    <name>Facet Core</name>
+    <description>IR、求值器与端口。此模块不得有任何三方依赖——纯度由 module-info 强制。</description>
+
+    <!-- 有意为空：内核零依赖。任何 dependency 进入此处都是设计事故。 -->
+</project>

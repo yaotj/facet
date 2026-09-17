@@ -1,0 +1,9 @@
+target/
+*.class
+*.jar
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.DS_Store
