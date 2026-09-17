@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
+<project xmlns="http://maven.apache.org/POM/4.1.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+         xsi:schemaLocation="http://maven.apache.org/POM/4.1.0 https://maven.apache.org/xsd/maven-4.1.0.xsd">
 
     <groupId>io.github.yaotj</groupId>
     <artifactId>facet-parent</artifactId>
@@ -14,6 +13,13 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!--
+          mvnup -a 把这个属性换成了 <build><sources><source><targetVersion>25，
+          结果编译目标静默退回 1.8（父 pom 的 <sources> 不向子模块继承，
+          且 3.x 的 compiler plugin 不读 targetVersion）。改回属性。
+          等换用 maven-compiler-plugin 4.x 时再重新评估 <sources>。
+        -->
         <maven.compiler.release>25</maven.compiler.release>
 
         <!--
@@ -25,45 +31,29 @@
         <maven-surefire-plugin.version>3.5.3</maven-surefire-plugin.version>
     </properties>
 
-    <modules>
+    <!--
+      4.1.0 model 能按目录自动发现子项目，但这里保留显式清单：它是唯一记录
+      模块角色划分的地方，也能挡住误把无关目录卷进 reactor。
+    -->
+    <subprojects>
         <!-- 内核：IR + 求值器 + 端口。依赖仅 java.base -->
-        <module>facet-core</module>
+        <subproject>facet-core</subproject>
 
         <!-- 编译前端：各模型的书写方式 -> Perm IR。单向依赖 core -->
-        <module>facet-dsl-rebac</module>
-        <module>facet-dsl-rbac</module>
-        <module>facet-dsl-abac</module>
+        <subproject>facet-dsl-rebac</subproject>
+        <subproject>facet-dsl-rbac</subproject>
+        <subproject>facet-dsl-abac</subproject>
 
         <!-- driven 适配器 -->
-        <module>facet-store-memory</module>
-        <module>facet-fanout-structured</module>
+        <subproject>facet-store-memory</subproject>
+        <subproject>facet-fanout-structured</subproject>
 
         <!-- driving 适配器 -->
-        <module>facet-pdp-http</module>
+        <subproject>facet-pdp-http</subproject>
 
         <!-- 判定矩阵 golden file 的测试基建 -->
-        <module>facet-testkit</module>
-    </modules>
-
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>io.github.yaotj</groupId>
-                <artifactId>facet-core</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.github.yaotj</groupId>
-                <artifactId>facet-store-memory</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.github.yaotj</groupId>
-                <artifactId>facet-testkit</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+        <subproject>facet-testkit</subproject>
+    </subprojects>
 
     <build>
         <pluginManagement>
