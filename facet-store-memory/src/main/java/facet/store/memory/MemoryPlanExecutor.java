@@ -43,6 +43,9 @@ public final class MemoryPlanExecutor implements PlanExecutor {
     /** 整棵计划先求值成有序集合再转 Stream：算子定义在集合上，逐元素惰性化没有意义。 */
     @Override
     public Stream<ObjectRef> execute(Plan plan) {
+        // 与 PG 适配器同一道检查：参考实现要连端口契约一起示范，否则"内存上能跑"会成为
+        // 新适配器省掉这道检查的理由
+        PlanExecutor.requirePaged(plan);
         return eval(plan).stream();
     }
 

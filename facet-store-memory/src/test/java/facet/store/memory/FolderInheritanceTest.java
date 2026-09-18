@@ -191,6 +191,20 @@ class FolderInheritanceTest {
         assertThrows(IllegalStateException.class, () -> checker.check(doc("readme"), VIEW));
     }
 
+    /**
+     * 顶层没有 {@code Page} 的计划直接拒绝。
+     *
+     * <p>{@code Page} 是这套 IR 里唯一表达"最多要多少"的算子。反查的结果集大小由数据决定
+     * 而不由请求决定，顶层缺了它，执行器只能把整个结果集拉回来——而这一步在拉完之前
+     * 没人知道有多大。{@code Planner} 产出的计划一律带 {@code Page}，这道检查拦的是手工拼计划。
+     */
+    @Test
+    void unpagedPlanIsRejected() {
+        assertThrows(IllegalArgumentException.class,
+                () -> run(principal("alice"),
+                        () -> executor.execute(new Plan.ScanReverse(VIEWER, DOC)).toList()));
+    }
+
     /** 一致性坐标从上下文取，适配器不支持就必须拒绝，不能静默读最新。 */
     @Test
     void memoryStoreRejectsSnapshotRead() {

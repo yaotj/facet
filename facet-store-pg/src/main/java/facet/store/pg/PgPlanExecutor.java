@@ -10,10 +10,11 @@ import facet.core.spi.PlanExecutor;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
@@ -24,23 +25,59 @@ import java.util.stream.Stream;
  * <p>编译结果按<strong>计划形状</strong>缓存：分页游标与页大小走绑定参数，不进 SQL 文本，
  * 因此缓存键把它们归一掉。若按原始 {@code Plan} 缓存，客户端只要不断变换游标就能让缓存
  * 无界膨胀——一个只读接口就成了内存耗尽的入口。
+ *
+ * <p>缓存本身也是<strong>有界</strong>的。归一化让键空间等于 schema 的形状数，看起来够小，
+ * 但那个前提在两处会破：热更新会引入新形状而旧形状永不淘汰（PDP 换 schema 时不重建执行器），
+ * 手工拼计划的调用方也不受 schema 约束。容量上限是不依赖这些前提的兜底。
  */
 public final class PgPlanExecutor implements PlanExecutor {
 
     /** 归一化后的分页参数。取任意合法值即可，它们不出现在 SQL 文本里。 */
     private static final int KEY_LIMIT = 1;
 
+    /**
+     * 编译缓存的容量上限。
+     *
+     * <p>取 256：归一化之后一个键对应一个"类型 × 关系"的反查形状，几百个已经远超任何
+     * 手写 schema 的规模。真要撞上这个数，说明形状不是来自 schema 而是来自请求，
+     * 那时该做的是查清来源，而不是把上限调大。
+     */
+    private static final int MAX_COMPILED = 256;
+
     private final Connections connections;
-    private final Map<Plan, SqlQuery> compiled = new ConcurrentHashMap<>();
+    private final Map<Plan, SqlQuery> compiled = boundedCache();
 
     /** @param connections 编译缓存挂在实例上，所以同一份装配应当长期复用同一个执行器 */
     public PgPlanExecutor(Connections connections) {
         this.connections = connections;
     }
 
-    /** 供测试与排查用：看一眼某个计划会发出什么 SQL。 */
+    /** 访问序 LRU。并发下靠 synchronizedMap：编译是每形状一次的冷路径，不值得为它做无锁结构。 */
+    private static Map<Plan, SqlQuery> boundedCache() {
+        var lru = new LinkedHashMap<Plan, SqlQuery>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<Plan, SqlQuery> eldest) {
+                return size() > MAX_COMPILED;
+            }
+        };
+        return Collections.synchronizedMap(lru);
+    }
+
+    /**
+     * 供测试与排查用：看一眼某个计划会发出什么 SQL。
+     *
+     * <p>不用 {@code computeIfAbsent}：{@code synchronizedMap} 下它会在整张表的锁里跑编译，
+     * 而编译是纯函数，重复做一次只是浪费一点 CPU，把锁按住才是真问题。
+     */
     public SqlQuery explainSql(Plan plan) {
-        return compiled.computeIfAbsent(cacheKey(plan), PlanSqlCompiler::compile);
+        var key = cacheKey(plan);
+        var hit = compiled.get(key);
+        if (hit != null) {
+            return hit;
+        }
+        var query = PlanSqlCompiler.compile(key);
+        compiled.put(key, query);
+        return query;
     }
 
     /**
@@ -69,6 +106,8 @@ public final class PgPlanExecutor implements PlanExecutor {
     /** 一条 SQL 出全部结果，中途不回应用层循环；结果一次物化，Stream 不会带着已关闭的连接逃出去。 */
     @Override
     public Stream<ObjectRef> execute(Plan plan) {
+        // 物化的前提是结果集有上限，而上限只能由 Page 给出
+        PlanExecutor.requirePaged(plan);
         var query = explainSql(plan);
         try (var conn = connections.get(); var ps = Statements.of(conn, query.sql(), connections)) {
             bind(ps, query.params(), plan);
@@ -91,8 +130,17 @@ public final class PgPlanExecutor implements PlanExecutor {
         }
     }
 
-    /** 分页值不影响 SQL 文本，从缓存键里剔掉，避免游标成为缓存膨胀的入口。 */
-    private static Plan cacheKey(Plan plan) {
+    /**
+     * 当前缓存了多少种计划形状。
+     *
+     * <p>给可观测性用：这个数应当在启动后迅速稳定在"类型 × 关系"的量级上。它持续增长
+     * 意味着形状来自请求而不是 schema，那是个应当去查清来源的信号。
+     */
+    public int compiledShapes() {
+        return compiled.size();
+    }
+
+    /** 分页值不影响 SQL 文本，从缓存键里剔掉，避免游标成为缓存膨胀的入口。 */    private static Plan cacheKey(Plan plan) {
         return plan instanceof Plan.Page(var input, _, _)
                 ? new Plan.Page(input, Cursor.START, KEY_LIMIT)
                 : plan;
