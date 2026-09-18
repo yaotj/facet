@@ -22,12 +22,18 @@ public sealed interface Explain {
     /** 未命中：{@code at} 上没有任何满足 {@code rel} 的路径。 */
     record Miss(Rel rel, ObjectRef at) implements Explain {}
 
+    /**
+     * 算子节点。{@code op} 用字符串而不是枚举：判定树是给人读的文本，{@code Through(parent)}
+     * 这种带参数的算子名枚举表达不了。
+     */
     record Branch(String op, SequencedCollection<Explain> children) implements Explain {
+        /** 定型成不可变：判定树返回后还要被渲染、被快照比对，不能再被任何一方改动。 */
         public Branch {
             children = List.copyOf(children);
         }
     }
 
+    /** 条件求值。带 {@code tier} 是为了让判定树能回答"这次判定为什么慢"——EXTERNAL 一层就是一次外部调用。 */
     record CondEval(Cond cond, boolean result, AttrKey.Tier tier) implements Explain {}
 
     /** 被 {@code Minus} 排除。单调，上层不可恢复。 */
@@ -36,6 +42,7 @@ public sealed interface Explain {
     /** 环剪枝：该 (perm, obj) 已在当前路径上。 */
     record CycleCut(ObjectRef at) implements Explain {}
 
+    /** 深度截断：结论落成 deny，但语义是"未知"。看到它要去调 {@code maxDepth}，不能读成"确实无权限"。 */
     record DepthExceeded(int limit) implements Explain {}
 
     /**

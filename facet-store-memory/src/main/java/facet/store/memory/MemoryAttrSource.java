@@ -25,6 +25,14 @@ public final class MemoryAttrSource implements AttrSource {
     // 并行扇出下 ++ 会丢计数，而这个计数器存在的理由正是让"外部属性有 IO 成本"可被断言
     private final AtomicInteger externalReads = new AtomicInteger();
 
+    /**
+     * 按 {@code tier} 分流写入，因此同名属性在 SNAPSHOT 与 EXTERNAL 两级上互不覆盖。
+     *
+     * <p>null 值当场拒绝：存进去之后"没有这个属性"与"属性值是空"就再也区分不开，
+     * 而条件求值对这两种情况的结论并不相同。
+     *
+     * @return this，便于连写多次 put
+     */
     public MemoryAttrSource put(ObjectRef obj, AttrKey key, Object value) {
         if (value == null) {
             throw new IllegalArgumentException("属性值不能为 null: " + key.name());

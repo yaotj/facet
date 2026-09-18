@@ -32,6 +32,11 @@ public final class Checker {
     private final AttrSource attrs;
     private final Fanout fanout;
 
+    /**
+     * 端口在构造期注入并固定：求值中途换存储会让同一棵判定树横跨两个数据源。
+     *
+     * @param fanout 扇出策略。它同时决定并发连接数，须与 {@code tuples.caps().maxFanout()} 相称
+     */
     public Checker(Schema schema, TupleSource tuples, AttrSource attrs, Fanout fanout) {
         this.schema = schema;
         this.tuples = tuples;
@@ -39,10 +44,12 @@ public final class Checker {
         this.fanout = fanout;
     }
 
+    /** 默认串行：并行扇出要占额外的连接预算，只能由部署方显式选择，不该是不留意就生效的默认值。 */
     public Checker(Schema schema, TupleSource tuples, AttrSource attrs) {
         this(schema, tuples, attrs, Fanout.SEQUENTIAL);
     }
 
+    /** 单点判定入口。必须在 {@link Ctx#run} 之内调用——主体、版本、{@link Memo} 都从上下文取。 */
     public Decision check(ObjectRef obj, Rel rel) {
         return check(schema.relation(obj.type(), rel).rewrite(), obj);
     }
@@ -80,6 +87,14 @@ public final class Checker {
         return out;
     }
 
+    /**
+     * 对一个 {@link Perm} 直接求值，不走 schema 的关系查找。前端与测试要拿匿名表达式判定时用它。
+     *
+     * <p>从 {@link Trail#EMPTY} 起算，因此环检测与深度上限的作用域就是这一次调用。
+     *
+     * <p>受检异常在这里收口成 {@link EvalException}：让七个算子分支都挂上 {@code throws Exception}
+     * 会把存储的实现细节泄进整个内核签名。{@code RuntimeException} 原样透出以保留原始栈。
+     */
     public Decision check(Perm perm, ObjectRef obj) {
         try {
             return eval(perm, obj, Trail.EMPTY);

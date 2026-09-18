@@ -40,6 +40,7 @@ public final class Rebac {
     private Rebac() {
     }
 
+    /** 开一份新 schema 的声明。类型之间可以互相引用，因此校验推迟到 {@link Builder#build()}。 */
     public static Builder define() {
         return new Builder();
     }
@@ -61,10 +62,12 @@ public final class Rebac {
         return new Perm.Through(new Rel(hop), then);
     }
 
+    /** 并集。也是递归定义唯一可用的顶层形状：反查要靠它把基础项与递归项分开当作递归 CTE 的种子。 */
     public static Perm anyOf(Perm... terms) {
         return new Perm.AnyOf(List.of(terms));
     }
 
+    /** 交集。递归不能藏在它下面——那种形状分解不出种子集，{@code Planner} 会拒绝编译而不是漏结果。 */
     public static Perm allOf(Perm... terms) {
         return new Perm.AllOf(List.of(terms));
     }
@@ -79,6 +82,7 @@ public final class Rebac {
         return new Perm.Guarded(base, cond);
     }
 
+    /** schema 级声明。类型按声明顺序保留，方便 golden 输出稳定。 */
     public static final class Builder {
 
         private final Map<ObjectType, Schema.TypeDef> types = new LinkedHashMap<>();
@@ -86,6 +90,12 @@ public final class Rebac {
         private Builder() {
         }
 
+        /**
+         * 声明一个对象类型。重名直接抛错，否则后一次声明会静默覆盖前一次，被覆盖掉的那些关系
+         * 只会在求值时表现为无声的 deny。
+         *
+         * @param config 在回调里声明该类型的关系；回调返回后这份声明即定型
+         */
         public Builder type(String name, Consumer<TypeBuilder> config) {
             var typeBuilder = new TypeBuilder();
             config.accept(typeBuilder);
@@ -104,6 +114,7 @@ public final class Rebac {
         }
     }
 
+    /** 单个类型内的关系声明。同名关系只能声明一次，纯存储与计算两种形态互斥。 */
     public static final class TypeBuilder {
 
         private final Map<Rel, Schema.RelDef> relations = new HashMap<>();

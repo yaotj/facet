@@ -36,6 +36,10 @@ public final class StructuredFanout implements Fanout {
 
     private final Duration timeout;
 
+    /**
+     * @param timeout 一次扇出等待全部分支的上限；非正值不代表"不限时"，而会让每次判定立刻超时失败，
+     *                因此当场拒绝
+     */
     public StructuredFanout(Duration timeout) {
         if (timeout == null || timeout.isNegative() || timeout.isZero()) {
             throw new IllegalArgumentException("扇出超时必须为正");
@@ -43,6 +47,7 @@ public final class StructuredFanout implements Fanout {
         this.timeout = timeout;
     }
 
+    /** 超时取 5 秒。它应当短于调用方的请求超时，否则请求先被上层掐掉，这里的取消就失去意义。 */
     public StructuredFanout() {
         this(DEFAULT_TIMEOUT);
     }

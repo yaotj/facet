@@ -30,6 +30,7 @@ public final class DecisionMatrix {
     private DecisionMatrix() {
     }
 
+    /** 不带上下文属性的矩阵。CONTEXT 属性缺失时条件不成立，因此带条件的关系在这里一律 DENY。 */
     public static String render(List<SubjectRef> subjects,
                                 List<ObjectRef> objects,
                                 List<Rel> relations,
@@ -37,6 +38,15 @@ public final class DecisionMatrix {
         return render(subjects, objects, relations, Map.of(), probe);
     }
 
+    /**
+     * 渲染整张矩阵。
+     *
+     * <p>输出顺序严格按 subjects × objects × relations 的入参顺序，主体名走
+     * {@code Cursor.keyOf}——顺序与命名都定死了，快照 diff 才只反映判定本身的变化。
+     *
+     * @param contextAttrs 整张表共用的 CONTEXT 属性；要对比不同上下文就渲染两张表再 diff
+     * @return 每行一条判定，紧随其后是缩进四格的命中路径
+     */
     public static String render(List<SubjectRef> subjects,
                                 List<ObjectRef> objects,
                                 List<Rel> relations,

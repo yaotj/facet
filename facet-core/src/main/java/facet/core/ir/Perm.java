@@ -27,6 +27,7 @@ public sealed interface Perm {
 
     /** 并：任一子项成立。 */
     record AnyOf(List<Perm> terms) implements Perm {
+        /** 空并等于 deny all，只可能是前端编译缺陷；在构造期炸掉，而不是留到线上变成一次静默拒绝。 */
         public AnyOf {
             terms = List.copyOf(terms);
             if (terms.isEmpty()) {
@@ -37,6 +38,7 @@ public sealed interface Perm {
 
     /** 交：全部子项成立。 */
     record AllOf(List<Perm> terms) implements Perm {
+        /** 空交等于 allow all，比空并更危险，同样在构造期拒绝。 */
         public AllOf {
             terms = List.copyOf(terms);
             if (terms.isEmpty()) {

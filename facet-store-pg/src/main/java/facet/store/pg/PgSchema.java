@@ -24,6 +24,13 @@ public final class PgSchema {
     private PgSchema() {
     }
 
+    /**
+     * 按依赖顺序给出全部 DDL：建表在前，索引与序列在后。每条都带 {@code IF NOT EXISTS}，
+     * 因此可以在每次启动时整批无条件执行。
+     *
+     * <p>刻意不做版本化迁移：这里只增不改，列的演进应当交给外部迁移工具，
+     * 由适配器悄悄改列会让运行中的旧版本读到不认识的表。
+     */
     public static List<String> ddl() {
         return List.of("""
                 CREATE TABLE IF NOT EXISTS facet_tuple (

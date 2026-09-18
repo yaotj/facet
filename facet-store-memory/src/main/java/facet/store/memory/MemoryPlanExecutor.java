@@ -31,11 +31,16 @@ public final class MemoryPlanExecutor implements PlanExecutor {
     private final MemoryTupleSource tuples;
     private final AttrSource attrs;
 
+    /**
+     * @param tuples 声明成 {@link MemoryTupleSource} 而不是端口类型：反查要用到端口上没有的
+     *               {@link MemoryTupleSource#subjectClosure}
+     */
     public MemoryPlanExecutor(MemoryTupleSource tuples, AttrSource attrs) {
         this.tuples = tuples;
         this.attrs = attrs;
     }
 
+    /** 整棵计划先求值成有序集合再转 Stream：算子定义在集合上，逐元素惰性化没有意义。 */
     @Override
     public Stream<ObjectRef> execute(Plan plan) {
         return eval(plan).stream();

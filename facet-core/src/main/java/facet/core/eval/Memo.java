@@ -21,16 +21,22 @@ public final class Memo {
 
     private final Map<Key, Decision> cache = new ConcurrentHashMap<>();
 
+    /** 未命中返回 {@code null} 而非 {@code Optional}：递归的每一层都要走这一步，包装对象的分配不值得。 */
     public Decision get(Key key) {
         return cache.get(key);
     }
 
+    /**
+     * 带剪枝的判定不入缓存。{@code CycleCut} 与 {@code DepthExceeded} 只对<strong>当前路径</strong>成立，
+     * 缓存下来会让另一条本可以走通的路径读到假的 deny。
+     */
     public void put(Key key, Decision decision) {
         if (!Explain.hasCut(decision.explain())) {
             cache.put(key, decision);
         }
     }
 
+    /** 给可观测性用：一次请求缓存了多少个判定，是"这条 schema 形状该不该改"的直接依据。 */
     public int size() {
         return cache.size();
     }

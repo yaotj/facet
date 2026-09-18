@@ -8,6 +8,7 @@ package facet.core.eval;
  */
 public final class Trail {
 
+    /** 顶层判定的起点。可以共享单例，因为链表节点全程不可变。 */
     public static final Trail EMPTY = new Trail(null, null);
 
     private final Memo.Key key;
@@ -18,10 +19,12 @@ public final class Trail {
         this.parent = parent;
     }
 
+    /** 只向下延长、不改动既有节点，所以并行扇出的兄弟分支可以安全地共用同一个前缀。 */
     public Trail push(Memo.Key next) {
         return new Trail(next, this);
     }
 
+    /** 环检测。线性扫描是有意的：路径长度被 {@code maxDepth} 压在几十的量级，建哈希集合的分配更贵。 */
     public boolean contains(Memo.Key candidate) {
         for (var node = this; node.key != null; node = node.parent) {
             if (node.key.equals(candidate)) {
@@ -31,6 +34,7 @@ public final class Trail {
         return false;
     }
 
+    /** 已入栈的<strong>求值节点数</strong>，不是 schema 的层级数——{@code maxDepth} 比较的就是这个值。 */
     public int depth() {
         int n = 0;
         for (var node = this; node.key != null; node = node.parent) {

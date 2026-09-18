@@ -32,11 +32,22 @@ public final class Planner {
     private final Schema schema;
     private final TupleSource.Caps caps;
 
+    /** {@code caps} 在构造期就定下：反向索引与递归查询能力决定编译结果，缺了要在编译期拒绝而不是执行时才发现。 */
     public Planner(Schema schema, TupleSource.Caps caps) {
         this.schema = schema;
         this.caps = caps;
     }
 
+    /**
+     * 编译 {@code type#rel} 的反查计划。
+     *
+     * <p>两道拒绝都放在编译期：存储没声明反向索引、schema 没声明 {@code listable}，都直接抛。
+     * 产出一个会退化成全表扫的计划，等于把问题留给数据量增长去暴露。
+     *
+     * @param after 上一页游标。分页由适配器执行，但包进 {@code Plan.Page} 才能保证每个适配器
+     *              的分页语义一致，而不是各自往 SQL 尾巴上加
+     * @param limit 单页条数上限
+     */
     public Plan plan(ObjectType type, Rel rel, Cursor after, int limit) {
         if (!caps.reverseIndex()) {
             throw new EvalException(

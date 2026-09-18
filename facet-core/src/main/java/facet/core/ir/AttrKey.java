@@ -14,6 +14,7 @@ package facet.core.ir;
  */
 public record AttrKey(String name, Kind kind, Tier tier) {
 
+    /** 属性名是 schema 与存储列的唯一键，空名会让条件静默匹配不到任何东西，因此在构造期就拒绝。 */
     public AttrKey {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("属性名不能为空");
@@ -25,10 +26,12 @@ public record AttrKey(String name, Kind kind, Tier tier) {
         return new AttrKey(name, Kind.STRING, tier);
     }
 
+    /** 便利构造：数值属性走任意精度比较，见 {@link Kind#NUMBER}。 */
     public static AttrKey number(String name, Tier tier) {
         return new AttrKey(name, Kind.NUMBER, tier);
     }
 
+    /** 便利构造：布尔属性只参与 EQ / NE，见 {@link Kind#BOOL}。 */
     public static AttrKey bool(String name, Tier tier) {
         return new AttrKey(name, Kind.BOOL, tier);
     }
@@ -51,6 +54,12 @@ public record AttrKey(String name, Kind kind, Tier tier) {
         BOOL
     }
 
+    /**
+     * 取值来源与获取代价。
+     *
+     * <p>声明顺序即偏序（越靠后越贵），条件的等级取其中所有属性的最大值，判定链路据此决定
+     * 一条规则能否被下推、能否被反查。
+     */
     public enum Tier {
 
         /** 请求上下文自带，无 IO：时间、来源 IP、MFA 状态、client_id。 */

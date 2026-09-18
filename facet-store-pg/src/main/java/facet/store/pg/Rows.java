@@ -13,6 +13,7 @@ final class Rows {
     private Rows() {
     }
 
+    /** 主体的三列表示。{@code rel} 为 {@code ''} 表示具体主体而非 NULL：递归 CTE 要在这一列上自连接。 */
     record Subject(String type, String id, String rel) {}
 
     static Subject of(SubjectRef ref) {

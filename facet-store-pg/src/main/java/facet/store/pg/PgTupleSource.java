@@ -58,10 +58,12 @@ public final class PgTupleSource implements TupleSource {
         this.writerLock = namespace.hashCode() & 0xFFFF_FFFFL;
     }
 
+    /** 命名空间取 {@link #DEFAULT_NAMESPACE}：单租户部署下所有写入共用同一把顾问锁。 */
     public PgTupleSource(Connections connections, int maxFanout) {
         this(connections, maxFanout, DEFAULT_NAMESPACE);
     }
 
+    /** 扇出上限取 1024。这个值必须与连接池容量相称，池较小的部署应当显式传一个更小的值。 */
     public PgTupleSource(Connections connections) {
         this(connections, 1024, DEFAULT_NAMESPACE);
     }
@@ -234,6 +236,7 @@ public final class PgTupleSource implements TupleSource {
         }
     }
 
+    /** 三项能力全部支持；{@code snapshotRead} 来自 {@code rev_from}/{@code rev_to} 时效区间。 */
     @Override
     public Caps caps() {
         return new Caps(true, true, true, maxFanout);

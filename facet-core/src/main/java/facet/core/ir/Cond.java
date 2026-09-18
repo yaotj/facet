@@ -13,25 +13,39 @@ public sealed interface Cond {
     /** 恒真。用作 {@code Guarded} 的中性元，便于前端无条件地统一产出 Guarded 结构。 */
     record Always() implements Cond {}
 
+    /** 否定。注意它不降低能力等级：对 {@code EXTERNAL} 属性取反，仍然是一次外部 IO。 */
     record Not(Cond inner) implements Cond {}
 
+    /** 合：全部子项成立。 */
     record And(List<Cond> terms) implements Cond {
+        /** 复制成不可变列表：条件树会被判定缓存长期持有，共享可变列表等于让缓存项可被就地篡改。 */
         public And { terms = List.copyOf(terms); }
     }
 
+    /** 或：任一子项成立。 */
     record Or(List<Cond> terms) implements Cond {
+        /** 同 {@link And}：构造期定型，杜绝外部持有的列表事后被改。 */
         public Or { terms = List.copyOf(terms); }
     }
 
+    /** 二元比较。比较语义不看值的长相，只看属性侧声明的 {@link AttrKey.Kind}，见 {@link #kindOf}。 */
     record Cmp(Op op, Term left, Term right) implements Cond {}
 
+    /**
+     * 允许的比较算子。
+     *
+     * <p>刻意只保留能原样下推成 SQL 谓词的这几个：{@code PREFIX} 对应 {@code LIKE 'x%'}，
+     * 仍然吃得到 B-tree 索引，而通用正则会让反查退化成全表扫。
+     */
     enum Op { EQ, NE, LT, LE, GT, GE, IN, PREFIX }
 
     /** 比较项：属性引用或标量字面量。 */
     sealed interface Term {
 
+        /** 属性引用。取值来源与代价由 {@link AttrKey.Tier} 决定，也正是它抬高整条条件的等级。 */
         record Attr(AttrKey key) implements Term {}
 
+        /** 标量字面量。裸 {@code Object} 是有意的：类型不由这里的值决定，而由参与比较的属性声明。 */
         record Lit(Object scalar) implements Term {}
     }
 
@@ -50,6 +64,7 @@ public sealed interface Cond {
         };
     }
 
+    /** 字面量不产生 IO，因此一个比较项的等级只可能由属性引用抬上来。 */
     static AttrKey.Tier tierOf(Term term) {
         return switch (term) {
             case Term.Attr(var key) -> key.tier();

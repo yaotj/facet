@@ -22,20 +22,43 @@ import java.util.Map;
  */
 public final class FolderScenario {
 
+    /** 主体类型。场景里只有 principal 主体是这个类型。 */
     public static final ObjectType USER = new ObjectType("user");
+
+    /** 用于覆盖 userset 授权：元组的主体侧是 {@code group:x#member} 而不是某个具体用户。 */
     public static final ObjectType GROUP = new ObjectType("group");
+
+    /** 层级的中间节点，自身可再有 {@code parent}，用来把继承深度做到两层以上。 */
     public static final ObjectType FOLDER = new ObjectType("folder");
+
+    /** 层级的叶子，deny 与条件两种形态都挂在它上面。 */
     public static final ObjectType DOC = new ObjectType("doc");
 
+    /** 纯存储关系，直接授权。 */
     public static final Rel VIEWER = new Rel("viewer");
+
+    /** group 的成员关系，作为 userset 授权的被解引用目标。 */
     public static final Rel MEMBER = new Rel("member");
+
+    /** 层级边，同时是 {@code Through} 的 hop，因此声明了目标类型。 */
     public static final Rel PARENT = new Rel("parent");
+
+    /** {@code edit} 的基础侧。 */
     public static final Rel EDITOR = new Rel("editor");
+
+    /** {@code edit} 的否定侧，用来验证 deny 的单调性。 */
     public static final Rel BANNED = new Rel("banned");
+
+    /** 计算关系：直接 viewer 或父级的 view，是递归形状的主角，声明为可反查。 */
     public static final Rel VIEW = new Rel("view");
+
+    /** 计算关系：editor 减去 banned。 */
     public static final Rel EDIT = new Rel("edit");
+
+    /** 计算关系：view 再加 MFA 条件，用来验证条件路径仍然可反查。 */
     public static final Rel VIEW_MFA = new Rel("view_mfa");
 
+    /** CONTEXT 等级的开关属性。停在 CONTEXT 才不会破坏 {@link #VIEW_MFA} 的可反查性。 */
     public static final AttrKey MFA = AttrKey.bool("mfa", AttrKey.Tier.CONTEXT);
 
     /** ReBAC：本级 viewer，或父级的 view——{@code Ref} 让层级深度由数据决定。 */
@@ -43,6 +66,7 @@ public final class FolderScenario {
             new Perm.Direct(VIEWER),
             new Perm.Through(PARENT, new Perm.Ref(VIEW))));
 
+    /** 场景 schema。四种形态各一条：多层继承、userset、deny、条件——少一条就少一类跨适配器偏差。 */
     public static final Schema SCHEMA = new Schema(Map.of(
             GROUP, new Schema.TypeDef(Map.of(MEMBER, Schema.tuples(MEMBER))),
             FOLDER, new Schema.TypeDef(Map.of(
@@ -63,6 +87,11 @@ public final class FolderScenario {
                             new Cond.Cmp(Cond.Op.EQ, new Cond.Term.Attr(MFA),
                                     new Cond.Term.Lit("true"))), true)))));
 
+    /**
+     * 场景数据。每条元组都在覆盖一个具体形态，删改任何一条都会让某类偏差失去覆盖：
+     * {@code carol} 只经 group 拿到权限，{@code deep} 要跳两层 folder，{@code alice} 同时是
+     * {@code readme} 的 editor 和 banned。
+     */
     public static final List<Tuple> TUPLES = List.of(
             Tuple.of(folder("eng"), VIEWER, user("alice")),
             Tuple.of(folder("eng"), VIEWER, group("eng"), MEMBER),
@@ -78,22 +107,27 @@ public final class FolderScenario {
     private FolderScenario() {
     }
 
+    /** {@code doc:id}。 */
     public static ObjectRef doc(String id) {
         return new ObjectRef(DOC, id);
     }
 
+    /** {@code folder:id}。 */
     public static ObjectRef folder(String id) {
         return new ObjectRef(FOLDER, id);
     }
 
+    /** {@code group:id}。作为对象出现时是 userset 的宿主，配合 {@link #MEMBER} 使用。 */
     public static ObjectRef group(String id) {
         return new ObjectRef(GROUP, id);
     }
 
+    /** {@code user:id}。用户出现在元组主体侧时用 {@link #principal}，这个方法给的是对象形态。 */
     public static ObjectRef user(String id) {
         return new ObjectRef(USER, id);
     }
 
+    /** 判定请求里的主体。返回具体类型而不是 {@code SubjectRef}，省掉调用方的强转。 */
     public static SubjectRef.Principal principal(String id) {
         return new SubjectRef.Principal(USER, id);
     }

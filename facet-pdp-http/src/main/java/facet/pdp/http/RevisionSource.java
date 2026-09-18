@@ -15,6 +15,7 @@ import facet.core.ir.Revision;
 @FunctionalInterface
 public interface RevisionSource {
 
+    /** @return 当前可读到的最新坐标；实现无法给出具体值时返回 {@code Revision.HEAD}，此时不会进缓存 */
     Revision head();
 
     /** 不提供水位。HEAD 请求因此不进缓存。 */

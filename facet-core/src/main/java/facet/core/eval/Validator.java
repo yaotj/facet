@@ -33,6 +33,12 @@ public final class Validator {
     private Validator() {
     }
 
+    /**
+     * 逐个 {@code (类型, 关系)} 各走一遍，而不是建一张全局图跑一次：报错必须能指出是哪条规则不合法，
+     * 全局遍历会把这个位置信息丢掉。
+     *
+     * <p>可反查性只对声明了 {@code listable} 的关系检查——同一条定义被 check 路径复用是合法的。
+     */
     public static void validate(Schema schema) {
         schema.types().forEach((type, typeDef) ->
                 typeDef.relations().forEach((rel, relDef) -> {

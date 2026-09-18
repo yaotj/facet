@@ -38,10 +38,12 @@ public final class Rbac {
     private Rbac() {
     }
 
+    /** 开始声明某个对象类型上的角色模型。一次 {@code build()} 只产出这一个类型，跨类型请各自声明。 */
     public static Builder on(String objectType) {
         return new Builder(new ObjectType(objectType));
     }
 
+    /** 角色与权限的声明。声明顺序被保留，好让编译出的 schema 与 golden 输出稳定可 diff。 */
     public static final class Builder {
 
         private final ObjectType type;
@@ -53,6 +55,7 @@ public final class Rbac {
             this.type = type;
         }
 
+        /** 先声明角色再谈继承与权限：{@code inherits} / {@code permission} 只接受已声明的名字，拼错当场报错。 */
         public Builder roles(String... names) {
             for (var name : names) {
                 if (superiors.putIfAbsent(name, new LinkedHashSet<>()) != null) {

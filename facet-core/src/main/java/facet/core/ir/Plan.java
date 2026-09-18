@@ -19,7 +19,9 @@ public sealed interface Plan {
     /** 反向索引扫描：主体在某 {@code rel} 上直接命中的该类型对象。 */
     record ScanReverse(Rel rel, ObjectType type) implements Plan {}
 
+    /** 并集。{@link Perm.AnyOf} 的降级结果。 */
     record Union(List<Plan> inputs) implements Plan {
+        /** {@link Perm.AnyOf} 已保证非空，走到这里的空并集只能是编译器缺陷，不是用户输入问题。 */
         public Union {
             inputs = List.copyOf(inputs);
             if (inputs.isEmpty()) {
@@ -28,7 +30,9 @@ public sealed interface Plan {
         }
     }
 
+    /** 交集。{@link Perm.AllOf} 的降级结果。 */
     record Intersect(List<Plan> inputs) implements Plan {
+        /** 同 {@link Union}：空交集在集合代数里是全集，必须当缺陷处理而不是放行。 */
         public Intersect {
             inputs = List.copyOf(inputs);
             if (inputs.isEmpty()) {
@@ -37,6 +41,7 @@ public sealed interface Plan {
         }
     }
 
+    /** 差集。{@link Perm.Minus} 的降级结果；deny 的单调语义在这里就是一次不可撤销的集合减法。 */
     record Difference(Plan left, Plan right) implements Plan {}
 
     /**
@@ -64,7 +69,13 @@ public sealed interface Plan {
      */
     record Filter(Plan input, Cond cond) implements Plan {}
 
+    /**
+     * 键游标分页，见 {@link Cursor}。
+     *
+     * <p>只出现在计划最外层：内层分页会截断后续集合运算的输入，得到的页是错的。
+     */
     record Page(Plan input, Cursor after, int limit) implements Plan {
+        /** 非正的 limit 在各家 SQL 里语义不一（报错、返回空、忽略），统一在构造期拒绝。 */
         public Page {
             if (limit <= 0) {
                 throw new IllegalArgumentException("分页大小必须为正");

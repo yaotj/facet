@@ -9,6 +9,7 @@ package facet.core.ir;
  */
 public record Rel(String name) {
 
+    /** 空关系名会让 schema 里出现一条谁都命中不了的规则，且不会报错，因此在构造期拦住。 */
     public Rel {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("关系名不能为空");

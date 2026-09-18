@@ -9,10 +9,13 @@ package facet.store.pg;
  */
 public sealed interface Param {
 
+    /** 计划里已经确定的值：关系名、类型名、条件字面量。仍走绑定参数，免掉转义与注入。 */
     record Literal(Object value) implements Param {}
 
+    /** 主体类型名。与 {@link PrincipalId} 一起在执行期绑定，同一份 SQL 因此能服务所有主体。 */
     record PrincipalType() implements Param {}
 
+    /** 主体 id。必须与 {@link PrincipalType} 成对绑定，只匹配 id 会把不同类型的同名主体混在一起。 */
     record PrincipalId() implements Param {}
 
     /** Userset 主体的关系名；具体主体为 {@code ''}。 */

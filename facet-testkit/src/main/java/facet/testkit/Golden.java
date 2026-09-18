@@ -24,6 +24,13 @@ public final class Golden {
     private Golden() {
     }
 
+    /**
+     * 比对快照，不一致直接抛 {@link AssertionError}（含双向内容，便于定位）。
+     *
+     * <p>路径相对当前工作目录解析，因此要在被测模块目录下运行——基线属于产生它的那个模块。
+     *
+     * @param name 基线文件在 {@code src/test/resources/golden} 下的相对路径
+     */
     public static void verify(String name, String actual) {
         var file = ROOT.resolve(name);
         boolean update = Boolean.getBoolean(UPDATE_FLAG);

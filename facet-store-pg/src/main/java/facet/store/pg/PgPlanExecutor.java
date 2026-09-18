@@ -33,6 +33,7 @@ public final class PgPlanExecutor implements PlanExecutor {
     private final Connections connections;
     private final Map<Plan, SqlQuery> compiled = new ConcurrentHashMap<>();
 
+    /** @param connections 编译缓存挂在实例上，所以同一份装配应当长期复用同一个执行器 */
     public PgPlanExecutor(Connections connections) {
         this.connections = connections;
     }
@@ -65,6 +66,7 @@ public final class PgPlanExecutor implements PlanExecutor {
         }
     }
 
+    /** 一条 SQL 出全部结果，中途不回应用层循环；结果一次物化，Stream 不会带着已关闭的连接逃出去。 */
     @Override
     public Stream<ObjectRef> execute(Plan plan) {
         var query = explainSql(plan);

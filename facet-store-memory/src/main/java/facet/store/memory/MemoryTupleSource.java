@@ -44,18 +44,34 @@ public final class MemoryTupleSource implements TupleSource {
     private final Map<SubjectRef, Set<SubjectRef.Userset>> memberships = new ConcurrentHashMap<>();
     private final int maxFanout;
 
+    /**
+     * @param maxFanout 对外公布的扇出上限；内存实现不下推 {@code LIMIT}，实际拦截由
+     *                  {@code Checker} 依这个声明完成
+     */
     public MemoryTupleSource(int maxFanout) {
         this.maxFanout = maxFanout;
     }
 
+    /** 扇出上限取 1024：内存实现不受连接池约束，这个默认值只是为了与 PG 适配器保持一致。 */
     public MemoryTupleSource() {
         this(1024);
     }
 
+    /** 变参形式，便于测试里直接写出字面元组；语义与 {@link #write(Collection)} 完全一致。 */
     public MemoryTupleSource write(Tuple... tuples) {
         return write(List.of(tuples));
     }
 
+    /**
+     * 追加元组，并同批维护正向、反向与 membership 三份索引。
+     *
+     * <p>三份索引必须一起更新：check 走正向，反查走反向，userset 闭包走 membership。
+     * 漏掉任何一份都会让同一份数据在 check 与反查上给出矛盾答案。
+     *
+     * <p>没有版本概念，所以写入是纯追加且重复写入无副作用；需要撤销请换 PG 适配器。
+     *
+     * @return this，便于连写多次 write
+     */
     public MemoryTupleSource write(Collection<Tuple> tuples) {
         for (var tuple : tuples) {
             forward.computeIfAbsent(new Fwd(tuple.object(), tuple.relation()), _ -> concurrentSet())
@@ -109,6 +125,7 @@ public final class MemoryTupleSource implements TupleSource {
         return Collections.unmodifiableSet(seen);
     }
 
+    /** 反向索引与递归展开由内存结构直接支持；{@code snapshotRead=false}，因为这里只存一个版本。 */
     @Override
     public Caps caps() {
         return new Caps(true, false, true, maxFanout);

@@ -22,10 +22,17 @@ public final class PgAttrSource implements AttrSource {
 
     private final Connections connections;
 
+    /** @param connections 每次读写各借一条连接并立即归还，属性访问不参与调用方的事务 */
     public PgAttrSource(Connections connections) {
         this.connections = connections;
     }
 
+    /**
+     * 写入属性，冲突即覆盖。幂等，重复导入不会撞主键。
+     *
+     * <p>属性表不带时效区间：快照读只作用于元组，SNAPSHOT 属性取到的始终是当前值。
+     * 需要按坐标回看属性变化的场景，应当把它建模成元组而不是属性。
+     */
     public void put(ObjectRef obj, AttrKey key, Object value) {
         if (key.tier() != AttrKey.Tier.SNAPSHOT) {
             throw new IllegalArgumentException("只存 SNAPSHOT 属性: " + key.name() + '/' + key.tier());

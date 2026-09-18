@@ -35,6 +35,7 @@ public sealed interface SubjectRef {
     /** 具体主体：用户、服务账号。 */
     record Principal(ObjectType type, String id) implements SubjectRef {
 
+        /** 空 id 会让这条元组把权限授给整个类型，构造期拒绝。 */
         public Principal {
             if (id == null || id.isBlank()) {
                 throw new IllegalArgumentException("主体 id 不能为空");

@@ -35,6 +35,7 @@ public interface DecisionCache {
     /** @return 命中的判定结论，未命中返回 {@code null} */
     Boolean get(Key key);
 
+    /** 写入结论。实现可以自行淘汰甚至直接丢弃：这里存的是可重算的结果，不是权威数据。 */
     void put(Key key, boolean allowed);
 
     /** 不缓存。默认值：缓存是可选优化，不该是默认行为。 */

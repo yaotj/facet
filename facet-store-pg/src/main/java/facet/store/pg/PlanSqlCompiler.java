@@ -26,6 +26,13 @@ public final class PlanSqlCompiler {
     private PlanSqlCompiler() {
     }
 
+    /**
+     * 把整棵计划编译成一条 SQL。主体、坐标与分页值都编成 {@link Param} 标记，SQL 文本因此只与
+     * 计划形状有关，可以按形状缓存并跨请求复用。
+     *
+     * <p>参数入列顺序必须与占位符在 SQL 文本里出现的顺序逐一对应，所以主体闭包的五个参数
+     * 先入列，再编译 body。
+     */
     public static SqlQuery compile(Plan plan) {
         var emit = new Emit();
         // 主体闭包的参数必须先入列：它在 SQL 文本里位于最前面。

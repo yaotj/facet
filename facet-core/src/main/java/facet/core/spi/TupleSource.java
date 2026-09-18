@@ -68,6 +68,7 @@ public interface TupleSource {
      */
     record Caps(boolean reverseIndex, boolean snapshotRead, boolean recursiveQuery, int maxFanout) {
 
+        /** {@code maxFanout} 非正会让每个算子都直接超限，等于整个内核不可用——这种装配错误必须在构造期就炸。 */
         public Caps {
             if (maxFanout <= 0) {
                 throw new IllegalArgumentException("maxFanout 必须为正");

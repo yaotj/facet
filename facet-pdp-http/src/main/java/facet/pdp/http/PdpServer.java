@@ -85,6 +85,10 @@ public final class PdpServer implements AutoCloseable {
         /** 默认请求体上限：1 MiB。写入批量再大也应当分批提交。 */
         public static final int DEFAULT_MAX_BODY = 1 << 20;
 
+        /**
+         * 全部校验放在构造期：这些参数一旦配错，症状要么是安全事故（不鉴权），要么是第一次请求
+         * 才炸（陈旧窗口配在不支持快照读的存储上），两种都比启动失败糟糕得多。
+         */
         public Config {
             if (authenticator == null) {
                 throw new IllegalArgumentException(
@@ -176,6 +180,7 @@ public final class PdpServer implements AutoCloseable {
         return server.getAddress().getPort();
     }
 
+    /** 停止监听并关闭执行器。先给在途请求留出几秒收尾，因此不是立即返回。 */
     @Override
     public void close() {
         // 给在途请求留收尾时间，再关执行器；只 stop(0) 会把执行器和在途任务留在原地

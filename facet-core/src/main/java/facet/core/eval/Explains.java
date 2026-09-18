@@ -17,6 +17,11 @@ public final class Explains {
     private Explains() {
     }
 
+    /**
+     * 渲染成缩进文本。缩进代表父子关系，同级顺序即求值顺序，所以两次判定的 diff 可以逐行比。
+     *
+     * <p>格式本身是契约：改了它就等于让所有 golden file 基线失效，必须连基线一起更新。
+     */
     public static String render(Explain explain) {
         var out = new StringBuilder();
         render(explain, 0, out);
