@@ -21,6 +21,7 @@ import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
 import facet.core.spi.AttrSource;
+import facet.core.spi.Metrics;
 import facet.core.spi.PlanExecutor;
 import facet.core.spi.TupleSource;
 
@@ -70,15 +71,16 @@ public final class PdpServer implements AutoCloseable {
                          RevisionSource revisions,
                          Duration staleness,
                          SchemaDecoder schemaDecoder,
-                         AuditSink audit) {
+                         AuditSink audit,
+                         Metrics metrics) {
 
-        /** 全关。缓存、陈旧读、远程下发 schema、审计都是要显式打开的能力。 */
+        /** 全关。缓存、陈旧读、远程下发 schema、审计、观测都是要显式打开的能力。 */
         public static final Extras NONE = new Extras(DecisionCache.NONE, RevisionSource.NONE,
-                Duration.ZERO, SchemaDecoder.DENIED, AuditSink.NONE);
+                Duration.ZERO, SchemaDecoder.DENIED, AuditSink.NONE, Metrics.NOOP);
 
         public Extras {
             if (cache == null || revisions == null || staleness == null
-                    || schemaDecoder == null || audit == null) {
+                    || schemaDecoder == null || audit == null || metrics == null) {
                 throw new IllegalArgumentException("可选能力用 NONE / DENIED / ZERO 表达关闭，不用 null");
             }
             if (staleness.isNegative()) {
@@ -88,21 +90,31 @@ public final class PdpServer implements AutoCloseable {
 
         /** 只缓存带具体坐标的请求。 */
         public Extras withCache(DecisionCache sink) {
-            return new Extras(sink, revisions, staleness, schemaDecoder, audit);
+            return new Extras(sink, revisions, staleness, schemaDecoder, audit, metrics);
         }
 
         /** 接受有界陈旧，读 HEAD 的请求因此也能进缓存。 */
         public Extras withStaleness(RevisionSource source, Duration window) {
-            return new Extras(cache, source, window, schemaDecoder, audit);
+            return new Extras(cache, source, window, schemaDecoder, audit, metrics);
         }
 
         /** 打开远程下发 schema。 */
         public Extras withSchemaDecoder(SchemaDecoder decoder) {
-            return new Extras(cache, revisions, staleness, decoder, audit);
+            return new Extras(cache, revisions, staleness, decoder, audit, metrics);
         }
 
         public Extras withAudit(AuditSink sink) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, sink);
+            return new Extras(cache, revisions, staleness, schemaDecoder, sink, metrics);
+        }
+
+        /**
+         * 装上观测挂点。
+         *
+         * <p>它会被装进每个请求的 {@code Ctx}，所以实现必须线程安全且足够便宜——
+         * 每请求一个虚拟线程，一次深层判定会调它几十次。
+         */
+        public Extras withMetrics(Metrics sink) {
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, sink);
         }
     }
 
@@ -519,7 +531,8 @@ public final class PdpServer implements AutoCloseable {
     }
 
     private Ctx.Request context(SubjectRef subject, Revision at, Map<String, Object> attrs) {
-        var request = Ctx.Request.of(subject);
+        // 观测挂点随请求上下文走：Checker / Expander 都从 Ctx 取，不必在构造期注入
+        var request = Ctx.Request.of(subject).withMetrics(config.extras().metrics());
         if (!at.isHead()) {
             request = request.at(at);
         }

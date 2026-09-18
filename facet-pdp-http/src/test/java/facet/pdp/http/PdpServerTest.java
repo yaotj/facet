@@ -4,6 +4,7 @@ import facet.core.eval.Ctx;
 import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
+import facet.core.spi.Metrics;
 import facet.core.spi.TupleSource;
 import facet.store.memory.MemoryAttrSource;
 import facet.store.memory.MemoryPlanExecutor;
@@ -458,6 +459,50 @@ class PdpServerTest {
         }
     }
 
+    /**
+     * 观测挂点要真的装进请求上下文。
+     *
+     * <p>这一条防的是"端口存在但接不上"：{@code Metrics} 是 {@code Ctx.Request} 上的字段，
+     * PDP 若不在建上下文时调 {@code withMetrics}，整套观测在 HTTP 部署里永远是 NOOP——
+     * 而这不会让任何判定出错，只会让生产上一个数都看不到。
+     */
+    @Test
+    void metricsAreInstalledIntoEveryRequest() throws IOException {
+        var decisions = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var fanouts = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var metrics = new Metrics() {
+
+            @Override
+            public void decision(Rel relation, boolean allowed, long elapsedNanos) {
+                decisions.add(relation.name() + "=" + allowed);
+            }
+
+            @Override
+            public void fanout(String operator, int width) {
+                fanouts.add(operator + "=" + width);
+            }
+
+            @Override
+            public void attributeBatch(facet.core.ir.AttrKey key, int size) {
+            }
+        };
+
+        var tuples = new MemoryTupleSource().write(FolderScenario.TUPLES);
+        var attrs = new MemoryAttrSource();
+        var observed = new PdpServer.Config(0, FolderScenario.SCHEMA, tuples, attrs,
+                new MemoryPlanExecutor(tuples, attrs), RelationshipWriter.READ_ONLY,
+                (authorization, scope) -> TOKEN.equals(authorization), 10,
+                PdpServer.Config.DEFAULT_MAX_BODY, false,
+                PdpServer.Extras.NONE.withMetrics(metrics));
+
+        try (var server = PdpServer.start(observed)) {
+            post(server.port(), "/v1/check", checkBody("alice", "deep"), TOKEN);
+
+            assertEquals(List.of("view=true"), decisions);
+            assertEquals(List.of("Through(parent)=1", "Through(parent)=1"), fanouts);
+        }
+    }
+
     /** 读凭据不能拿来写：能读的客户端拿到判定结果，能写的客户端能改写授权数据本身。 */
     @Test
     void writeRequiresItsOwnScope() throws IOException {
@@ -537,6 +582,10 @@ class PdpServerTest {
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
         connection.setRequestProperty("Content-Type", "application/json");
+        // 不复用连接：每个用例都在新的临时端口上起服务器，JDK 的 KeepAliveCache 按
+        // host:port 缓存 socket，端口被系统回收再分配之后会把旧连接交给新服务器，
+        // 症状是某个用例偶发拿到与断言无关的状态码
+        connection.setRequestProperty("Connection", "close");
         if (token != null) {
             connection.setRequestProperty("Authorization", token);
         }

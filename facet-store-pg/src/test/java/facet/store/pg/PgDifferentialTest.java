@@ -2,6 +2,7 @@ package facet.store.pg;
 
 import facet.core.eval.Checker;
 import facet.core.eval.Ctx;
+import facet.core.eval.Expander;
 import facet.core.eval.Keys;
 import facet.core.eval.Planner;
 import facet.core.eval.Validator;
@@ -37,6 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * 固定场景撞不到的类型。
  *
  * <p>每个种子都清库重灌：种子之间必须互不污染，否则一次失败无法归因到具体形状。
+ *
+ * <p>三条求值路径全都比对——check、反查、展开。只比前两条的话，展开那条路上适配器
+ * 特有的行为（返回顺序、userset 形态、空集表示）就没有任何断言看着。
  */
 @Testcontainers(disabledWithoutDocker = true)
 class PgDifferentialTest {
@@ -89,7 +93,28 @@ class PgDifferentialTest {
                         lookupAll(scenario, subject, pgPlanner, plan -> pgExecutor.execute(plan).toList()),
                         "反查结果在 seed=" + seed + " subject=" + subject + " 上分歧");
             }
+
+            // 第三条路径同样要对齐：展开用的是 subjects()/targets()，和 check 走的是
+            // 同一组端口但不同的调用形状（一次取全部主体，而不是问"包含我吗"），
+            // 所以适配器的返回顺序、userset 形态、空集表示都在这里被重新检验一遍。
+            var memExpander = new Expander(scenario.schema(), memTuples, memAttrs);
+            var pgExpander = new Expander(scenario.schema(), pgTuples, pgAttrs);
+            for (var object : scenario.docs()) {
+                assertEquals(
+                        expand(scenario, memExpander, object),
+                        expand(scenario, pgExpander, object),
+                        "展开结果在 seed=" + seed + " object=" + object + " 上分歧");
+            }
         }
+    }
+
+    /** 展开不针对某个主体，上下文里的 principal 只是占位。 */
+    private static List<SubjectRef.Principal> expand(RandomScenario.Generated scenario,
+                                                     Expander expander, ObjectRef object) {
+        var request = Ctx.Request.of(scenario.subjects().getFirst())
+                .withContextAttrs(scenario.context());
+        return List.copyOf(
+                Ctx.run(request, () -> expander.subjects(object, RandomScenario.VIEW)));
     }
 
     private static List<ObjectRef> lookupAll(RandomScenario.Generated scenario, SubjectRef subject,
