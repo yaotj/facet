@@ -7,7 +7,7 @@ WITH RECURSIVE facet_subject(stype, sid, srel) AS (
       ON t.subject_type = s.stype AND t.subject_id = s.sid AND t.subject_rel = s.srel
    WHERE t.rev_from <= ? AND ? < t.rev_to
 )
-SELECT p1.otype, p1.oid
+SELECT DISTINCT p1.otype, p1.oid, (p1.otype || ':' || p1.oid) COLLATE "C" AS sort_key
   FROM (
 SELECT f2.otype, f2.oid
   FROM (
@@ -16,7 +16,7 @@ SELECT f2.otype, f2.oid
   JOIN facet_subject s
     ON t.subject_type = s.stype AND t.subject_id = s.sid AND t.subject_rel = s.srel
  WHERE t.relation = ?::text AND t.object_type = ?::text AND t.rev_from <= ? AND ? < t.rev_to)
-UNION
+UNION ALL
 (SELECT t.object_type AS otype, t.object_id AS oid
   FROM facet_tuple t
   JOIN (
@@ -25,7 +25,7 @@ UNION
   JOIN facet_subject s
     ON t.subject_type = s.stype AND t.subject_id = s.sid AND t.subject_rel = s.srel
  WHERE t.relation = ?::text AND t.object_type = ?::text AND t.rev_from <= ? AND ? < t.rev_to)
-UNION
+UNION ALL
 (SELECT clo5.otype, clo5.oid
   FROM (
     WITH RECURSIVE cl4(otype, oid) AS (
@@ -56,5 +56,5 @@ SELECT t.object_type AS otype, t.object_id AS oid
  WHERE (SELECT CASE WHEN lower(v7.v) IN ('true','false') THEN lower(v7.v)::boolean END FROM (SELECT (?::text) AS v) v7) IS NOT DISTINCT FROM (SELECT CASE WHEN lower(v8.v) IN ('true','false') THEN lower(v8.v)::boolean END FROM (SELECT (?::text) AS v) v8)
 ) p1
  WHERE (p1.otype || ':' || p1.oid) COLLATE "C" > ?::text
- ORDER BY (p1.otype || ':' || p1.oid) COLLATE "C"
+ ORDER BY sort_key
  LIMIT ?

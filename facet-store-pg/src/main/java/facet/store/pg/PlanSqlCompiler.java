@@ -68,7 +68,7 @@ public final class PlanSqlCompiler {
                      WHERE t.relation = %s AND t.object_type = %s AND %s"""
                     .formatted(text(rel.name(), emit), text(type.name(), emit), rev("t", emit));
 
-            case Plan.Union(var inputs) -> setOp(inputs, "UNION", emit);
+            case Plan.Union(var inputs) -> setOp(inputs, "UNION ALL", emit);
             case Plan.Intersect(var inputs) -> setOp(inputs, "INTERSECT", emit);
             case Plan.Difference(var left, var right) ->
                     '(' + select(left, emit) + ")\nEXCEPT\n(" + select(right, emit) + ')';
@@ -98,10 +98,20 @@ public final class PlanSqlCompiler {
                 // COLLATE "C" 不是装饰：Keys 用 UTF-8 字节序，PG 默认走本地化排序规则。
                 // 不钉住 C，同一份游标在两个适配器上会翻页到不同位置。
                 var key = "(%s.otype || ':' || %s.oid) COLLATE \"C\"".formatted(alias, alias);
+                // DISTINCT 在这里而不是靠 UNION 去重：千万级实测下 UNION 的去重排序会把
+                // 十万行落盘（external merge），而这一层本来就要为 ORDER BY 排一次。
+                // 集合语义不变——Plan.Union 编成 UNION ALL，重复行统一在这里消掉，
+                // 而 Page 之上不再有集合运算。排序键必须进选择列表，否则 PG 拒绝
+                // DISTINCT 与 ORDER BY 的组合；它是前两列的函数，不影响去重结果。
                 // 游标与页大小走专用占位符：SQL 文本因此与分页值无关，可以按计划形状缓存
-                yield "SELECT %s.otype, %s.oid\n  FROM %s\n WHERE %s > %s\n ORDER BY %s\n LIMIT %s"
-                        .formatted(alias, alias, derived(input, alias, emit), key,
-                                marker(new Param.After(), "?::text", emit), key,
+                yield """
+                        SELECT DISTINCT %s.otype, %s.oid, %s AS sort_key
+                          FROM %s
+                         WHERE %s > %s
+                         ORDER BY sort_key
+                         LIMIT %s"""
+                        .formatted(alias, alias, key, derived(input, alias, emit), key,
+                                marker(new Param.After(), "?::text", emit),
                                 marker(new Param.Limit(), "?", emit));
             }
         };
