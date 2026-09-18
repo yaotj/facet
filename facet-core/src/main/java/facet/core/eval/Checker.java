@@ -1,5 +1,6 @@
 package facet.core.eval;
 
+import facet.core.ir.AttrKey;
 import facet.core.ir.Cond;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Perm;
@@ -9,7 +10,11 @@ import facet.core.spi.AttrSource;
 import facet.core.spi.Fanout;
 import facet.core.spi.TupleSource;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.SequencedMap;
 import java.util.concurrent.Callable;
 
 /**
@@ -40,6 +45,39 @@ public final class Checker {
 
     public Decision check(ObjectRef obj, Rel rel) {
         return check(schema.relation(obj.type(), rel).rewrite(), obj);
+    }
+
+    /**
+     * 批量判定："这一批资源里我能做 {@code rel} 的有哪些"。
+     *
+     * <p>它不是 {@code check} 的语法糖，而是两处真实开销的解法：
+     * <ul>
+     *   <li><strong>属性预取。</strong>入口对象自身要用到的 SNAPSHOT / EXTERNAL 属性
+     *       一次取回。逐个 check 的话，一次"这 200 个文档我能看哪些"就是 200 次外部调用。</li>
+     *   <li><strong>记忆化共享。</strong>调用方在同一个 {@code Ctx.run} 里发起，整批共用一个
+     *       {@code Memo}；同一个 folder 被 200 个 doc 指向时只求值一次。</li>
+     * </ul>
+     *
+     * <p>预取只覆盖入口对象自身的属性（见 {@link Attrs#localKeys}）。{@code Through} 之后的
+     * 对象由数据决定，那部分仍是逐条回源——这是已知边界。
+     *
+     * @return 保持入参顺序的判定结果
+     */
+    public SequencedMap<ObjectRef, Decision> checkAll(Collection<ObjectRef> objects, Rel rel) {
+        var out = new LinkedHashMap<ObjectRef, Decision>();
+        if (objects.isEmpty()) {
+            return out;
+        }
+        var keys = new LinkedHashSet<AttrKey>();
+        objects.stream().map(ObjectRef::type).distinct()
+                .forEach(type -> keys.addAll(Attrs.localKeys(schema, type, rel)));
+
+        // 没有属性要预取就不必套装饰器，省掉一次无谓的 map 构造
+        var batch = keys.isEmpty()
+                ? this
+                : new Checker(schema, tuples, PrefetchedAttrs.of(attrs, keys, objects), fanout);
+        objects.forEach(obj -> out.put(obj, batch.check(obj, rel)));
+        return out;
     }
 
     public Decision check(Perm perm, ObjectRef obj) {

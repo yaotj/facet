@@ -118,6 +118,8 @@ public final class PdpServer implements AutoCloseable {
         server.setExecutor(executor);
         server.createContext("/v1/check",
                 exchange -> handle(exchange, Authenticator.Scope.READ, this::check));
+        server.createContext("/v1/check-bulk",
+                exchange -> handle(exchange, Authenticator.Scope.READ, this::checkBulk));
         server.createContext("/v1/lookup-resources",
                 exchange -> handle(exchange, Authenticator.Scope.READ, this::lookup));
         server.createContext("/v1/relationships",
@@ -162,8 +164,34 @@ public final class PdpServer implements AutoCloseable {
                 wantExplain ? Explains.render(decision.explain()) : null);
     }
 
-    private Object lookup(HttpExchange exchange, byte[] body) throws IOException {
-        var request = JSON.readValue(body, Wire.LookupRequest.class);
+    /**
+     * 批量判定。
+     *
+     * <p>批量大小复用 {@code maxPageSize}：它和分页是同一个问题——一次请求允许服务端
+     * 做多少工作。超限直接拒绝而不是截断，否则调用方会以为剩下的对象都是 deny。
+     */
+    private Object checkBulk(HttpExchange exchange, byte[] body) throws IOException {
+        var request = JSON.readValue(body, Wire.BulkCheckRequest.class);
+        if (request.objects().size() > config.maxPageSize()) {
+            throw new IllegalArgumentException(
+                    "单次批量判定最多 " + config.maxPageSize() + " 个对象，收到 "
+                            + request.objects().size());
+        }
+        var objects = new ArrayList<ObjectRef>(request.objects().size());
+        request.objects().forEach(wire -> objects.add(ref(wire)));
+
+        // 整批在同一个 Ctx 里跑：共享 Memo，属性也只预取一次
+        var decisions = Ctx.run(
+                context(subject(request.subject()), request.at(), request.context()),
+                () -> checker.checkAll(objects, new Rel(request.relation())));
+
+        var results = new ArrayList<Wire.BulkDecision>(decisions.size());
+        decisions.forEach((object, decision) -> results.add(new Wire.BulkDecision(
+                new Wire.Ref(object.type().name(), object.id()), decision.allowed())));
+        return new Wire.BulkCheckResponse(results);
+    }
+
+    private Object lookup(HttpExchange exchange, byte[] body) throws IOException {        var request = JSON.readValue(body, Wire.LookupRequest.class);
         int limit = Math.min(
                 request.limit() == null ? config.maxPageSize() : Math.max(request.limit(), 1),
                 config.maxPageSize());

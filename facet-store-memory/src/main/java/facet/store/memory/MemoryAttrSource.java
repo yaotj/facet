@@ -4,6 +4,8 @@ import facet.core.ir.AttrKey;
 import facet.core.ir.ObjectRef;
 import facet.core.spi.AttrSource;
 
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -54,5 +56,30 @@ public final class MemoryAttrSource implements AttrSource {
     /** EXTERNAL 属性被读取的次数。用来断言批量化是否生效。 */
     public int externalReads() {
         return externalReads.get();
+    }
+
+    /**
+     * 批量读取。一次批量只记一次读取——这个计数器存在的意义就是让"批量化生效了没有"
+     * 可以被断言，而不是靠看代码猜。
+     */
+    @Override
+    public Map<ObjectRef, Object> values(AttrKey key, Collection<ObjectRef> objects) {
+        var source = switch (key.tier()) {
+            case SNAPSHOT -> snapshot;
+            case EXTERNAL -> {
+                externalReads.incrementAndGet();
+                yield external;
+            }
+            case CONTEXT -> throw new IllegalArgumentException(
+                    "CONTEXT 属性由请求自带，不经过 AttrSource: " + key.name());
+        };
+        var out = new LinkedHashMap<ObjectRef, Object>();
+        for (var obj : objects) {
+            var value = source.get(new Slot(obj, key.name()));
+            if (value != null) {
+                out.put(obj, value);
+            }
+        }
+        return out;
     }
 }

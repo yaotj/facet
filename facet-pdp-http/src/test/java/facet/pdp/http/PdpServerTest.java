@@ -75,6 +75,37 @@ class PdpServerTest {
         assertTrue(post("/v1/check", checkBody("bob", "deep"), TOKEN).body().contains("\"allowed\":false"));
     }
 
+    /** 批量判定：结果顺序与请求一致，好让调用方逐项对上而不必再按 id 匹配一遍。 */
+    @Test
+    void bulkCheckPreservesRequestOrder() throws IOException {
+        var body = """
+                {"subject":{"type":"user","id":"alice"},"relation":"view",\
+                "objects":[{"type":"doc","id":"private"},{"type":"doc","id":"deep"}]}""";
+
+        var response = post("/v1/check-bulk", body, TOKEN);
+
+        assertEquals(200, response.status(), response.body());
+        assertTrue(response.body().indexOf("\"private\"") < response.body().indexOf("\"deep\""),
+                response.body());
+        assertTrue(response.body().contains("{\"object\":{\"type\":\"doc\",\"id\":\"private\"},"
+                + "\"allowed\":false}"), response.body());
+        assertTrue(response.body().contains("{\"object\":{\"type\":\"doc\",\"id\":\"deep\"},"
+                + "\"allowed\":true}"), response.body());
+    }
+
+    /** 批量大小超限直接拒绝，而不是截断——截断会让调用方以为剩下的都是 deny。 */
+    @Test
+    void oversizedBulkIsRejected() throws IOException {
+        var body = """
+                {"subject":{"type":"user","id":"alice"},"relation":"view","objects":[\
+                {"type":"doc","id":"a"},{"type":"doc","id":"b"},{"type":"doc","id":"c"}]}""";
+
+        var response = post("/v1/check-bulk", body, TOKEN);
+
+        assertEquals(400, response.status(), response.body());
+        assertTrue(response.body().contains("最多 2"), response.body());
+    }
+
     /** explain 会暴露关系图，没显式开就不返回——哪怕客户端加了 ?explain=true。 */
     @Test
     void explainIsWithheldUnlessEnabled() throws IOException {

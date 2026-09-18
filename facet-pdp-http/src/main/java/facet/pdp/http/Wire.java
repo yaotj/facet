@@ -51,6 +51,26 @@ final class Wire {
     /** {@code POST /v1/check} 响应体。{@code explain} 未开启时为 {@code null}。 */
     record CheckResponse(boolean allowed, String explain) {}
 
+    /** {@code POST /v1/check-bulk} 请求体：一个主体对一批对象的同一个关系。 */
+    record BulkCheckRequest(Ref subject,
+                            List<Ref> objects,
+                            String relation,
+                            Long at,
+                            Map<String, Object> context) {
+
+        BulkCheckRequest {
+            require(subject, "subject");
+            require(objects, "objects");
+            require(relation, "relation");
+        }
+    }
+
+    /** 批量判定里的单条结果。 */
+    record BulkDecision(Ref object, boolean allowed) {}
+
+    /** {@code POST /v1/check-bulk} 响应体，顺序与请求里的 {@code objects} 一致。 */
+    record BulkCheckResponse(List<BulkDecision> results) {}
+
     /** {@code POST /v1/lookup-resources} 请求体。 */
     record LookupRequest(Ref subject,
                          String objectType,

@@ -2,9 +2,13 @@ package facet.store.pg;
 
 import facet.core.ir.AttrKey;
 import facet.core.ir.ObjectRef;
+import facet.core.ir.ObjectType;
 import facet.core.spi.AttrSource;
 
 import java.sql.SQLException;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * SNAPSHOT 属性源。
@@ -68,6 +72,46 @@ public final class PgAttrSource implements AttrSource {
             }
         } catch (SQLException e) {
             throw new PgException("读取属性失败", e);
+        }
+    }
+
+    /**
+     * 批量读取：一条 {@code IN} 查询取回整批。
+     *
+     * <p>批量判定必须走这条路。默认实现会逐条发查询，一次"这 200 个文档我能看哪些"
+     * 就是 200 次往返——这正是 {@code Plan} 那套下推要消灭的东西，check 路径上也不该留。
+     */
+    @Override
+    public Map<ObjectRef, Object> values(AttrKey key, Collection<ObjectRef> objects) {
+        if (key.tier() != AttrKey.Tier.SNAPSHOT) {
+            // CONTEXT 由请求自带，EXTERNAL 不该由数据库回答；两者都走单条路径去抛错
+            return AttrSource.super.values(key, objects);
+        }
+        if (objects.isEmpty()) {
+            return Map.of();
+        }
+        // (object_type, object_id) 成对匹配：拆成两个 IN 会把不同对象的类型与 id 交叉组合
+        var placeholders = String.join(", ", java.util.Collections.nCopies(objects.size(), "(?, ?)"));
+        var sql = """
+                SELECT object_type, object_id, value FROM facet_attr
+                 WHERE name = ? AND (object_type, object_id) IN (%s)""".formatted(placeholders);
+        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
+            ps.setString(1, key.name());
+            int index = 2;
+            for (var obj : objects) {
+                ps.setString(index++, obj.type().name());
+                ps.setString(index++, obj.id());
+            }
+            var out = new LinkedHashMap<ObjectRef, Object>();
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.put(new ObjectRef(new ObjectType(rs.getString(1)), rs.getString(2)),
+                            rs.getString(3));
+                }
+            }
+            return out;
+        } catch (SQLException e) {
+            throw new PgException("批量读取属性失败", e);
         }
     }
 }
