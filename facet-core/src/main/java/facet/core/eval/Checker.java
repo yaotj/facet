@@ -110,7 +110,7 @@ public final class Checker {
      */
     public Decision check(Perm perm, ObjectRef obj) {
         try {
-            return eval(perm, obj, Trail.EMPTY);
+            return eval(perm, obj, Trail.root(Ctx.current().maxNodes()));
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -120,6 +120,9 @@ public final class Checker {
 
     /** 没有 {@code default} 分支：{@code Perm} 加算子，这里立刻编译失败。 */
     private Decision eval(Perm perm, ObjectRef obj, Trail trail) throws Exception {
+        // 先扣预算再做任何判断：剪枝返回与记忆化命中同样是一次访问，
+        // 而指数退化的绝大部分开销恰恰就落在这些"便宜"的返回上
+        trail.charge();
         var request = Ctx.current();
         var key = new Memo.Key(perm, obj);
 

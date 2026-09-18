@@ -23,6 +23,7 @@ import facet.core.ir.Tuple;
 import facet.core.spi.AttrSource;
 import facet.core.spi.Metrics;
 import facet.core.spi.PlanExecutor;
+import facet.core.spi.StorageException;
 import facet.core.spi.TupleSource;
 
 import java.io.IOException;
@@ -184,6 +185,8 @@ public final class PdpServer implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(PdpServer.class.getName());
     /** 停机时给在途请求的收尾时间（秒）。 */
     private static final int DRAIN_SECONDS = 2;
+    /** 503 里给出的建议重试间隔（秒）。给一个值，客户端才不会立刻重试把恢复中的存储再压一遍。 */
+    private static final int RETRY_AFTER_SECONDS = 1;
 
     private final HttpServer server;
     private final ExecutorService executor;
@@ -505,6 +508,17 @@ public final class PdpServer implements AutoCloseable {
                 error(exchange, 405, "not_supported", e.getMessage());
             } catch (EvalException e) {
                 error(exchange, 422, "cannot_evaluate", e.getMessage());
+            } catch (StorageException e) {
+                // 可重试的存储故障给 503 而不是 500：500 的语义是"服务端有 bug"，
+                // 网关和客户端不会重试；而连接断开、死锁、语句超时恰恰重试一次就好。
+                // 两者混成同一个码，调用方只能在"全都重试"和"全都不重试"之间选，两个都错。
+                LOG.log(System.Logger.Level.WARNING, "存储故障，可重试=" + e.retryable(), e);
+                if (e.retryable()) {
+                    exchange.getResponseHeaders().add("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
+                    error(exchange, 503, "storage_unavailable", "存储暂时不可用，请重试");
+                } else {
+                    error(exchange, 500, "internal_error", "判定失败");
+                }
             } catch (RuntimeException e) {
                 // 对外脱敏（消息可能带元组内容），对内必须留痕
                 LOG.log(System.Logger.Level.ERROR, "判定失败", e);

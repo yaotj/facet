@@ -52,7 +52,7 @@ public final class PgPlanExecutor implements PlanExecutor {
     public String explainAnalyze(Plan plan) {
         var query = explainSql(plan);
         var sql = "EXPLAIN (ANALYZE, BUFFERS) " + query.sql();
-        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
+        try (var conn = connections.get(); var ps = Statements.of(conn, sql, connections)) {
             bind(ps, query.params(), plan);
             var out = new StringBuilder();
             try (var rs = ps.executeQuery()) {
@@ -70,7 +70,7 @@ public final class PgPlanExecutor implements PlanExecutor {
     @Override
     public Stream<ObjectRef> execute(Plan plan) {
         var query = explainSql(plan);
-        try (var conn = connections.get(); var ps = conn.prepareStatement(query.sql())) {
+        try (var conn = connections.get(); var ps = Statements.of(conn, query.sql(), connections)) {
             bind(ps, query.params(), plan);
             var out = new ArrayList<ObjectRef>();
             // 类型名在结果集里高度重复（一次反查通常只有一两个类型），驻留掉能省下

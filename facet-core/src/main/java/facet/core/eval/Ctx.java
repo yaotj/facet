@@ -25,6 +25,15 @@ public final class Ctx {
     /** 递归深度上限。Through 的深度由数据决定，必须有个不依赖数据正确性的兜底。 */
     public static final int DEFAULT_MAX_DEPTH = 32;
 
+    /**
+     * 单次判定的工作预算（求值节点总数）。
+     *
+     * <p>取 20000 的依据：正常形状下一次判定走几十个节点，深目录加大组也就几百；到四位数
+     * 就已经说明授权图在这个方向上不对了。留出两个数量级的余量，是为了不让预算变成
+     * 一个需要每个部署都去调的参数——它是兜底，不是调优旋钮。
+     */
+    public static final int DEFAULT_MAX_NODES = 20_000;
+
     private Ctx() {
     }
 
@@ -55,18 +64,23 @@ public final class Ctx {
      * @param memo         记忆化的作用域就是这次请求。挂在长生命周期的 {@link Checker} 上会变成跨请求缓存，
      *                     读到已经失效的判定
      * @param maxDepth     递归节点数上限，语义见 {@link #withMaxDepth(int)}
+     * @param maxNodes     单次判定的求值节点总数上限，语义见 {@link #withMaxNodes(int)}
      */
     public record Request(SubjectRef principal,
                           Revision at,
                           Map<String, Object> contextAttrs,
                           Memo memo,
                           int maxDepth,
+                          int maxNodes,
                           Metrics metrics) {
 
         public Request {
             contextAttrs = Map.copyOf(contextAttrs);
             if (maxDepth <= 0) {
                 throw new IllegalArgumentException("深度上限必须为正");
+            }
+            if (maxNodes <= 0) {
+                throw new IllegalArgumentException("工作预算必须为正");
             }
             if (metrics == null) {
                 throw new IllegalArgumentException("观测挂点用 Metrics.NOOP 表达关闭，不用 null");
@@ -76,15 +90,15 @@ public final class Ctx {
         /** 默认请求：读最新、无上下文属性、不观测。 */
         public static Request of(SubjectRef principal) {
             return new Request(principal, Revision.HEAD, Map.of(), new Memo(),
-                    DEFAULT_MAX_DEPTH, Metrics.NOOP);
+                    DEFAULT_MAX_DEPTH, DEFAULT_MAX_NODES, Metrics.NOOP);
         }
 
         public Request withContextAttrs(Map<String, Object> attrs) {
-            return new Request(principal, at, attrs, memo, maxDepth, metrics);
+            return new Request(principal, at, attrs, memo, maxDepth, maxNodes, metrics);
         }
 
         public Request at(Revision revision) {
-            return new Request(principal, revision, contextAttrs, memo, maxDepth, metrics);
+            return new Request(principal, revision, contextAttrs, memo, maxDepth, maxNodes, metrics);
         }
 
         /**
@@ -94,7 +108,7 @@ public final class Ctx {
          * 都要关心观测；而观测恰恰是请求作用域的横切关注点，{@code ScopedValue} 就是为它准备的。
          */
         public Request withMetrics(Metrics sink) {
-            return new Request(principal, at, contextAttrs, memo, maxDepth, sink);
+            return new Request(principal, at, contextAttrs, memo, maxDepth, maxNodes, sink);
         }
 
         /**
@@ -106,7 +120,21 @@ public final class Ctx {
          * "深目录下的文档突然没权限"，而 explain 里只有一行 {@code DEPTH-EXCEEDED}。
          */
         public Request withMaxDepth(int depth) {
-            return new Request(principal, at, contextAttrs, memo, depth, metrics);
+            return new Request(principal, at, contextAttrs, memo, depth, maxNodes, metrics);
+        }
+
+        /**
+         * 调整单次判定的工作预算。
+         *
+         * <p>它与 {@link #withMaxDepth(int)} 管的是两件不同的事：深度限一条<em>路径</em>的长度，
+         * 预算限整棵<em>树</em>的大小。深度与扇出双双合规、但图足够宽的情况下，一次判定仍然可以
+         * 访问几十万个节点——每个节点在真实存储上是一次往返。
+         *
+         * <p>抬高它之前先确认那是业务上真实存在的形状：绝大多数情况下，需要抬高预算说明
+         * schema 的某条路径应该改成可反查的关系，而不是让 check 每次去遍历半张图。
+         */
+        public Request withMaxNodes(int nodes) {
+            return new Request(principal, at, contextAttrs, memo, maxDepth, nodes, metrics);
         }
     }
 }

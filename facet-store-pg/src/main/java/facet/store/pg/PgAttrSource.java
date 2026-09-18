@@ -6,8 +6,10 @@ import facet.core.ir.ObjectType;
 import facet.core.spi.AttrSource;
 
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -19,6 +21,9 @@ import java.util.Map;
  * <p>EXTERNAL 明确不支持：数据库不是 PIP，把外部系统的属性塞进元组库只是把耦合藏起来。
  */
 public final class PgAttrSource implements AttrSource {
+
+    /** 单批读取的对象数上限。绑定参数上限（65535）与语句缓存命中率共同决定了这个值。 */
+    private static final int CHUNK = 1000;
 
     private final Connections connections;
 
@@ -44,7 +49,7 @@ public final class PgAttrSource implements AttrSource {
         var sql = """
                 INSERT INTO facet_attr (object_type, object_id, name, value) VALUES (?, ?, ?, ?)
                 ON CONFLICT (object_type, object_id, name) DO UPDATE SET value = EXCLUDED.value""";
-        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
+        try (var conn = connections.get(); var ps = Statements.of(conn, sql, connections)) {
             ps.setString(1, obj.type().name());
             ps.setString(2, obj.id());
             ps.setString(3, key.name());
@@ -70,7 +75,7 @@ public final class PgAttrSource implements AttrSource {
         var sql = """
                 SELECT value FROM facet_attr
                  WHERE object_type = ? AND object_id = ? AND name = ?""";
-        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
+        try (var conn = connections.get(); var ps = Statements.of(conn, sql, connections)) {
             ps.setString(1, obj.type().name());
             ps.setString(2, obj.id());
             ps.setString(3, key.name());
@@ -87,6 +92,11 @@ public final class PgAttrSource implements AttrSource {
      *
      * <p>批量判定必须走这条路。默认实现会逐条发查询，一次"这 200 个文档我能看哪些"
      * 就是 200 次往返——这正是 {@code Plan} 那套下推要消灭的东西，check 路径上也不该留。
+     *
+     * <p>超过 {@link #CHUNK} 个对象会被切成多批。两个原因，都不是为了性能：
+     * 一是 Postgres 的绑定参数上限是 65535，一批两个参数意味着约三万对象就会撞上，
+     * 而报出来的是一个毫无线索的协议错误；二是 SQL 文本随批量大小变化，
+     * 固定切块能让绝大多数批次共用同一条语句，服务端的执行计划缓存才有意义。
      */
     @Override
     public Map<ObjectRef, Object> values(AttrKey key, Collection<ObjectRef> objects) {
@@ -97,26 +107,40 @@ public final class PgAttrSource implements AttrSource {
         if (objects.isEmpty()) {
             return Map.of();
         }
+        var out = new LinkedHashMap<ObjectRef, Object>();
+        var chunk = new ArrayList<ObjectRef>(Math.min(objects.size(), CHUNK));
+        for (var obj : objects) {
+            chunk.add(obj);
+            if (chunk.size() == CHUNK) {
+                readChunk(key, chunk, out);
+                chunk.clear();
+            }
+        }
+        if (!chunk.isEmpty()) {
+            readChunk(key, chunk, out);
+        }
+        return out;
+    }
+
+    private void readChunk(AttrKey key, List<ObjectRef> objects, Map<ObjectRef, Object> out) {
         // (object_type, object_id) 成对匹配：拆成两个 IN 会把不同对象的类型与 id 交叉组合
         var placeholders = String.join(", ", java.util.Collections.nCopies(objects.size(), "(?, ?)"));
         var sql = """
                 SELECT object_type, object_id, value FROM facet_attr
                  WHERE name = ? AND (object_type, object_id) IN (%s)""".formatted(placeholders);
-        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
+        try (var conn = connections.get(); var ps = Statements.of(conn, sql, connections)) {
             ps.setString(1, key.name());
             int index = 2;
             for (var obj : objects) {
                 ps.setString(index++, obj.type().name());
                 ps.setString(index++, obj.id());
             }
-            var out = new LinkedHashMap<ObjectRef, Object>();
             try (var rs = ps.executeQuery()) {
                 while (rs.next()) {
                     out.put(new ObjectRef(new ObjectType(rs.getString(1)), rs.getString(2)),
                             rs.getString(3));
                 }
             }
-            return out;
         } catch (SQLException e) {
             throw new PgException("批量读取属性失败", e);
         }

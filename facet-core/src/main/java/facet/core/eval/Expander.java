@@ -51,7 +51,8 @@ public final class Expander {
      * @return 按 {@link SubjectRef#ORDER} 排序，保证跨适配器结果可比对
      */
     public SequencedSet<SubjectRef.Principal> subjects(ObjectRef obj, Rel rel) {
-        var found = expand(schema.relation(obj.type(), rel).rewrite(), obj, Trail.EMPTY);
+        var found = expand(schema.relation(obj.type(), rel).rewrite(), obj,
+                Trail.root(Ctx.current().maxNodes()));
         return found.stream()
                 .sorted(SubjectRef.ORDER)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -59,6 +60,8 @@ public final class Expander {
 
     /** 没有 {@code default} 分支：{@code Perm} 加算子，展开这里立刻编译失败。 */
     private SequencedSet<SubjectRef.Principal> expand(Perm perm, ObjectRef obj, Trail trail) {
+        // 展开没有记忆化，同一个对象可能被多条路径重复展开，工作预算在这条路上比 check 更要紧
+        trail.charge();
         var key = new Memo.Key(perm, obj);
         if (trail.contains(key) || trail.depth() >= Ctx.current().maxDepth()) {
             // 环与超深都返回空集：展开是"收集"，缺一部分比无限递归好，

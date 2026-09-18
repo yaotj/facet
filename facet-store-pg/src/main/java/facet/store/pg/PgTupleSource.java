@@ -68,15 +68,20 @@ public final class PgTupleSource implements TupleSource {
         this(connections, 1024, DEFAULT_NAMESPACE);
     }
 
-    /** 建表建索引。幂等，可以在每次启动时无条件调用。 */
+    /**
+     * 建表建索引。幂等，可以在每次启动时无条件调用。
+     *
+     * <p>整批放在一个事务里：Postgres 的 DDL 是事务性的，中途失败不该留下"建了一半"的表结构，
+     * 那种半成品要靠人去分辨哪几条已经执行过。也因此不能依赖连接的 {@code autoCommit} 默认值。
+     */
     public void migrate() {
-        try (var conn = connections.get(); var st = conn.createStatement()) {
-            for (var ddl : PgSchema.ddl()) {
-                st.execute(ddl);
+        inTransaction(conn -> {
+            try (var st = Statements.of(conn, connections)) {
+                for (var ddl : PgSchema.ddl()) {
+                    st.execute(ddl);
+                }
             }
-        } catch (SQLException e) {
-            throw new PgException("建表失败", e);
-        }
+        }, "建表失败");
     }
 
     /**
@@ -103,14 +108,14 @@ public final class PgTupleSource implements TupleSource {
             assigned[0] = nextRevision(conn);
             revokeAll(conn, assigned[0], revokes);
             writeAll(conn, assigned[0], writes);
-        });
+        }, "提交授权变更失败");
         return new Revision(assigned[0]);
     }
 
     /** 当前坐标水位。反查与 check 需要"读我刚写的"时，把它放进 {@code Ctx.Request.at}。 */
     public Revision head() {
         try (var conn = connections.get();
-             var ps = conn.prepareStatement("SELECT last_value FROM facet_revision");
+             var ps = Statements.of(conn, "SELECT last_value FROM facet_revision", connections);
              var rs = ps.executeQuery()) {
             return rs.next() ? new Revision(rs.getLong(1)) : new Revision(0);
         } catch (SQLException e) {
@@ -126,6 +131,9 @@ public final class PgTupleSource implements TupleSource {
      * "最老的仍在使用的坐标"，通常是 PDP 的缓存有效期换算出来的值。
      *
      * <p>分批删除并逐批提交：历史积压大时一条 DELETE 会形成超长事务、膨胀 WAL 并长时间持锁。
+     * 事务边界在这里是<strong>显式</strong>的，不能沿用连接的 {@code autoCommit} 默认值——
+     * 连接池普遍配成 {@code autoCommit=false}，那样"逐批提交"会变成一个大事务，
+     * 而且在连接归还时整批回滚，症状是"回收报告删了几十万行，表却一行没少"。
      *
      * @return 删除的行数
      */
@@ -137,18 +145,28 @@ public final class PgTupleSource implements TupleSource {
                 DELETE FROM facet_tuple
                  WHERE ctid IN (SELECT ctid FROM facet_tuple WHERE rev_to <= ? LIMIT ?)""";
         int total = 0;
-        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
-            while (true) {
-                ps.setLong(1, watermark.value());
-                ps.setInt(2, COMPACT_BATCH);
-                int deleted = ps.executeUpdate();
-                total += deleted;
-                if (deleted < COMPACT_BATCH) {
-                    return total;
+        try (var conn = connections.get()) {
+            boolean autoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+            try (var ps = Statements.of(conn, sql, connections)) {
+                while (true) {
+                    ps.setLong(1, watermark.value());
+                    ps.setInt(2, COMPACT_BATCH);
+                    int deleted = ps.executeUpdate();
+                    conn.commit();
+                    total += deleted;
+                    if (deleted < COMPACT_BATCH) {
+                        return total;
+                    }
                 }
+            } catch (SQLException | RuntimeException e) {
+                rollbackQuietly(conn, e);
+                throw e;
+            } finally {
+                restoreQuietly(conn, autoCommit);
             }
         } catch (SQLException e) {
-            throw new PgException("回收历史元组失败（已删除 " + total + " 行）", e);
+            throw new PgException("回收历史元组失败（已提交删除 " + total + " 行）", e);
         }
     }
 
@@ -160,13 +178,13 @@ public final class PgTupleSource implements TupleSource {
     /** 写入指定坐标。仅供导入/回填。 */
     public void write(Revision at, Collection<Tuple> tuples) {
         requireConcrete(at);
-        inTransaction(conn -> writeAll(conn, at.value(), tuples));
+        inTransaction(conn -> writeAll(conn, at.value(), tuples), "导入元组失败");
     }
 
     /** 撤销：闭区间而不是 DELETE，历史坐标仍然可读。 */
     public void revoke(Revision at, Tuple... tuples) {
         requireConcrete(at);
-        inTransaction(conn -> revokeAll(conn, at.value(), List.of(tuples)));
+        inTransaction(conn -> revokeAll(conn, at.value(), List.of(tuples)), "撤销元组失败");
     }
 
     @Override
@@ -182,7 +200,7 @@ public final class PgTupleSource implements TupleSource {
                    AND rev_from <= ? AND ? < rev_to
                  ORDER BY subject_type COLLATE "C", subject_id COLLATE "C", subject_rel COLLATE "C"
                  LIMIT ?""";
-        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
+        try (var conn = connections.get(); var ps = Statements.of(conn, sql, connections)) {
             long at = Rows.at();
             ps.setString(1, obj.type().name());
             ps.setString(2, obj.id());
@@ -212,7 +230,7 @@ public final class PgTupleSource implements TupleSource {
                    AND rev_from <= ? AND ? < rev_to
                  ORDER BY object_id COLLATE "C"
                  LIMIT ?""";
-        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
+        try (var conn = connections.get(); var ps = Statements.of(conn, sql, connections)) {
             var s = Rows.of(subject);
             long at = Rows.at();
             ps.setString(1, s.type());
@@ -263,8 +281,10 @@ public final class PgTupleSource implements TupleSource {
      *
      * <p>回滚与恢复自身的异常用 {@code addSuppressed} 挂到原异常上，不替换它——否则事故现场
      * 只剩下连接层错误，真实原因丢失。
+     *
+     * @param whatFailed 包进 {@link PgException} 的说明；每个写入口不同，好让日志能直接定位
      */
-    private void inTransaction(SqlAction action) {
+    private void inTransaction(SqlAction action, String whatFailed) {
         try (var conn = connections.get()) {
             boolean autoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
@@ -278,7 +298,7 @@ public final class PgTupleSource implements TupleSource {
                 restoreQuietly(conn, autoCommit);
             }
         } catch (SQLException e) {
-            throw new PgException("提交授权变更失败", e);
+            throw new PgException(whatFailed, e);
         }
     }
 
@@ -303,23 +323,28 @@ public final class PgTupleSource implements TupleSource {
         void run(Connection conn) throws SQLException;
     }
 
-    /** 顾问锁只活到事务结束，进程崩溃不会留下悬挂锁——这是不用表锁的理由。 */
-    private static void lockWriters(Connection conn, long key) throws SQLException {
-        try (var ps = conn.prepareStatement("SELECT pg_advisory_xact_lock(?)")) {
+    /**
+     * 顾问锁只活到事务结束，进程崩溃不会留下悬挂锁——这是不用表锁的理由。
+     *
+     * <p>它同样带语句超时：写入被这把锁串行化，一个卡住的写者不设上限就会把同命名空间的
+     * 全部写入无限期堵住，而调用方看到的只是"提交没有返回"。
+     */
+    private void lockWriters(Connection conn, long key) throws SQLException {
+        try (var ps = Statements.of(conn, "SELECT pg_advisory_xact_lock(?)", connections)) {
             ps.setLong(1, key);
             ps.executeQuery().close();
         }
     }
 
-    private static long nextRevision(Connection conn) throws SQLException {
-        try (var ps = conn.prepareStatement("SELECT nextval('facet_revision')");
+    private long nextRevision(Connection conn) throws SQLException {
+        try (var ps = Statements.of(conn, "SELECT nextval('facet_revision')", connections);
              var rs = ps.executeQuery()) {
             rs.next();
             return rs.getLong(1);
         }
     }
 
-    private static void writeAll(Connection conn, long revision, Collection<Tuple> tuples)
+    private void writeAll(Connection conn, long revision, Collection<Tuple> tuples)
             throws SQLException {
         if (tuples.isEmpty()) {
             return;
@@ -328,7 +353,7 @@ public final class PgTupleSource implements TupleSource {
                 INSERT INTO facet_tuple
                   (object_type, object_id, relation, subject_type, subject_id, subject_rel, rev_from)
                 VALUES (?, ?, ?, ?, ?, ?, ?)""";
-        try (var ps = conn.prepareStatement(sql)) {
+        try (var ps = Statements.of(conn, sql, connections)) {
             for (var tuple : tuples) {
                 var subject = Rows.of(tuple.subject());
                 ps.setString(1, tuple.object().type().name());
@@ -344,7 +369,7 @@ public final class PgTupleSource implements TupleSource {
         }
     }
 
-    private static void revokeAll(Connection conn, long revision, Collection<Tuple> tuples)
+    private void revokeAll(Connection conn, long revision, Collection<Tuple> tuples)
             throws SQLException {
         if (tuples.isEmpty()) {
             return;
@@ -354,7 +379,7 @@ public final class PgTupleSource implements TupleSource {
                  WHERE object_type = ? AND object_id = ? AND relation = ?
                    AND subject_type = ? AND subject_id = ? AND subject_rel = ?
                    AND rev_to = ?""";
-        try (var ps = conn.prepareStatement(sql)) {
+        try (var ps = Statements.of(conn, sql, connections)) {
             for (var tuple : tuples) {
                 var subject = Rows.of(tuple.subject());
                 ps.setLong(1, revision);

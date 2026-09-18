@@ -503,6 +503,57 @@ class PdpServerTest {
         }
     }
 
+    /**
+     * 可重试的存储故障给 503，并带上 {@code Retry-After}。
+     *
+     * <p>500 的语义是"服务端有 bug"，网关和客户端都不会重试它；而连接断开、死锁、语句超时
+     * 恰恰重试一次就好。两者混成同一个码，调用方只能在"全都重试"和"全都不重试"之间选。
+     */
+    @Test
+    void retryableStorageFailureIsServiceUnavailable() throws IOException {
+        try (var server = PdpServer.start(failing(true))) {
+            var response = post(server.port(), "/v1/check", checkBody("alice", "deep"), TOKEN);
+
+            assertEquals(503, response.status(), response.body());
+            assertTrue(response.body().contains("storage_unavailable"), response.body());
+        }
+    }
+
+    /** 不可重试的存储故障仍然是 500：让客户端去重试一个永远不会变的结果是浪费两边的资源。 */
+    @Test
+    void permanentStorageFailureStaysInternalError() throws IOException {
+        try (var server = PdpServer.start(failing(false))) {
+            var response = post(server.port(), "/v1/check", checkBody("alice", "deep"), TOKEN);
+
+            assertEquals(500, response.status(), response.body());
+            assertTrue(response.body().contains("internal_error"), response.body());
+        }
+    }
+
+    private PdpServer.Config failing(boolean retryable) {
+        var tuples = new MemoryTupleSource().write(FolderScenario.TUPLES);
+        var attrs = new MemoryAttrSource();
+        return new PdpServer.Config(0, FolderScenario.SCHEMA,
+                new BrokenTuples(tuples.caps(), retryable), attrs,
+                new MemoryPlanExecutor(tuples, attrs), RelationshipWriter.READ_ONLY,
+                (authorization, scope) -> TOKEN.equals(authorization), 10, false);
+    }
+
+    /** 每次读取都报存储故障的替身：真实的连接中断在测试里没法稳定制造。 */
+    private record BrokenTuples(TupleSource.Caps caps, boolean retryable) implements TupleSource {
+
+        @Override
+        public java.util.Set<SubjectRef> subjects(facet.core.ir.ObjectRef obj, Rel rel) {
+            throw new facet.core.spi.StorageException("连接中断", null, retryable);
+        }
+
+        @Override
+        public java.util.stream.Stream<facet.core.ir.ObjectRef> objects(
+                SubjectRef subject, Rel rel, facet.core.ir.ObjectType type) {
+            throw new facet.core.spi.StorageException("连接中断", null, retryable);
+        }
+    }
+
     /** 读凭据不能拿来写：能读的客户端拿到判定结果，能写的客户端能改写授权数据本身。 */
     @Test
     void writeRequiresItsOwnScope() throws IOException {
