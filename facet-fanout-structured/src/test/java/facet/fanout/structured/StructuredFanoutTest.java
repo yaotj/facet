@@ -88,4 +88,26 @@ class StructuredFanoutTest {
     void timeoutMustBePositive() {
         assertThrows(IllegalArgumentException.class, () -> new StructuredFanout(Duration.ZERO));
     }
+
+    /**
+     * 超时必须真的生效。
+     *
+     * <p>一条卡住的查询会让 {@code join()} 永久等待，连带请求线程和整棵子任务树；
+     * 断言的是"没有等到任务自己结束"，而不是某个具体异常类型——
+     * preview API 的异常类型换过几轮，把测试钉在类型上只会让它变脆。
+     */
+    @Test
+    void slowTasksAreCutOffByTimeout() {
+        var impatient = new StructuredFanout(Duration.ofMillis(100));
+        List<Callable<Integer>> tasks = List.of(() -> {
+            Thread.sleep(Duration.ofSeconds(30));
+            return 1;
+        });
+
+        long started = System.nanoTime();
+        assertThrows(Exception.class, () -> impatient.all(tasks));
+        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+        assertTrue(elapsed.toSeconds() < 5, "没有在超时窗口内中断，实际耗时 " + elapsed);
+    }
 }

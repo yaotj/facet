@@ -267,8 +267,7 @@ class PdpServerTest {
 
     /** 有界缓存必须淘汰：键里含请求带来的对象 id，无界就是客户端可控的内存泄漏。 */
     @Test
-    void boundedCacheEvicts() {
-        var cache = DecisionCache.bounded(2);
+    void boundedCacheEvicts() {        var cache = DecisionCache.bounded(2);
         var keys = new java.util.ArrayList<DecisionCache.Key>();
         for (int i = 0; i < 3; i++) {
             var key = new DecisionCache.Key(FolderScenario.principal("alice"),

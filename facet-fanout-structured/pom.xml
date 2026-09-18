@@ -20,6 +20,18 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- 并行与顺序实现的差分测试需要一个真实存储和一批随机场景 -->
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-store-memory</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-testkit</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
