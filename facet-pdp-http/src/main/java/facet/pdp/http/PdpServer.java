@@ -27,7 +27,9 @@ import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -58,9 +60,13 @@ public final class PdpServer implements AutoCloseable {
     /**
      * @param port          0 表示由系统分配，便于测试
      * @param schema        已通过 {@code Validator} 的 schema
-     * @param maxPageSize   分页硬上限
+     * @param maxPageSize   分页与批量的硬上限
      * @param maxBodyBytes  请求体硬上限
      * @param exposeExplain 是否允许通过 {@code explain=true} 取回判定树
+     * @param cache         判定缓存。只缓存带具体坐标的请求，见 {@link DecisionCache}
+     * @param revisions     坐标水位来源。配了它并且 {@code staleness} 为正，读 HEAD 的请求
+     *                      才会被钉到具体坐标并进缓存
+     * @param staleness     可接受的陈旧窗口。{@code ZERO} 表示不接受，HEAD 请求一律不缓存
      */
     public record Config(int port,
                          Schema schema,
@@ -71,7 +77,10 @@ public final class PdpServer implements AutoCloseable {
                          Authenticator authenticator,
                          int maxPageSize,
                          int maxBodyBytes,
-                         boolean exposeExplain) {
+                         boolean exposeExplain,
+                         DecisionCache cache,
+                         RevisionSource revisions,
+                         Duration staleness) {
 
         /** 默认请求体上限：1 MiB。写入批量再大也应当分批提交。 */
         public static final int DEFAULT_MAX_BODY = 1 << 20;
@@ -87,14 +96,36 @@ public final class PdpServer implements AutoCloseable {
             if (maxBodyBytes <= 0) {
                 throw new IllegalArgumentException("请求体上限必须为正");
             }
+            if (cache == null || revisions == null || staleness == null) {
+                throw new IllegalArgumentException("缓存相关配置用 NONE / ZERO 表达关闭，不用 null");
+            }
+            if (staleness.isNegative()) {
+                throw new IllegalArgumentException("陈旧窗口不能为负");
+            }
+            // 钉住坐标读就是快照读；存储不支持却配了陈旧窗口，会在第一次请求时才炸
+            if (!staleness.isZero() && !tuples.caps().snapshotRead()) {
+                throw new IllegalArgumentException(
+                        "配置了陈旧窗口，但存储未声明 snapshotRead：钉住坐标读需要快照读能力");
+            }
         }
 
-        /** 请求体上限取默认值。 */
+        /** 不缓存、请求体上限取默认值。 */
         public Config(int port, Schema schema, TupleSource tuples, AttrSource attrs,
                       PlanExecutor executor, RelationshipWriter writer,
                       Authenticator authenticator, int maxPageSize, boolean exposeExplain) {
             this(port, schema, tuples, attrs, executor, writer, authenticator,
-                    maxPageSize, DEFAULT_MAX_BODY, exposeExplain);
+                    maxPageSize, DEFAULT_MAX_BODY, exposeExplain,
+                    DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO);
+        }
+
+        /** 不缓存，指定请求体上限。 */
+        public Config(int port, Schema schema, TupleSource tuples, AttrSource attrs,
+                      PlanExecutor executor, RelationshipWriter writer,
+                      Authenticator authenticator, int maxPageSize, int maxBodyBytes,
+                      boolean exposeExplain) {
+            this(port, schema, tuples, attrs, executor, writer, authenticator,
+                    maxPageSize, maxBodyBytes, exposeExplain,
+                    DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO);
         }
     }
 
@@ -108,6 +139,8 @@ public final class PdpServer implements AutoCloseable {
     private final Config config;
     private final Checker checker;
     private final Planner planner;
+    /** 钉住的坐标水位。volatile 就够：过期重取是幂等的，多取一次只是多一次水位查询。 */
+    private volatile Pinned pinned;
 
     private PdpServer(Config config) throws IOException {
         this.config = config;
@@ -156,10 +189,23 @@ public final class PdpServer implements AutoCloseable {
         var request = JSON.readValue(body, Wire.CheckRequest.class);
         var subject = subject(request.subject());
         var object = ref(request.object());
-        var decision = Ctx.run(context(subject, request.at(), request.context()),
-                () -> checker.check(object, new Rel(request.relation())));
-
+        var relation = new Rel(request.relation());
         boolean wantExplain = config.exposeExplain() && "true".equals(query(exchange, "explain"));
+
+        var at = resolveAt(request.at());
+        var key = cacheKey(subject, object, relation, at, request.context(), wantExplain);
+        if (key != null) {
+            var hit = config.cache().get(key);
+            if (hit != null) {
+                return new Wire.CheckResponse(hit, null);
+            }
+        }
+
+        var decision = Ctx.run(context(subject, at, request.context()),
+                () -> checker.check(object, relation));
+        if (key != null) {
+            config.cache().put(key, decision.allowed());
+        }
         return new Wire.CheckResponse(decision.allowed(),
                 wantExplain ? Explains.render(decision.explain()) : null);
     }
@@ -169,6 +215,9 @@ public final class PdpServer implements AutoCloseable {
      *
      * <p>批量大小复用 {@code maxPageSize}：它和分页是同一个问题——一次请求允许服务端
      * 做多少工作。超限直接拒绝而不是截断，否则调用方会以为剩下的对象都是 deny。
+     *
+     * <p>先查缓存再把未命中的交给 {@code checkAll}：命中的那部分连属性预取都省掉了，
+     * 而未命中的仍然共享同一次预取与同一个 Memo。
      */
     private Object checkBulk(HttpExchange exchange, byte[] body) throws IOException {
         var request = JSON.readValue(body, Wire.BulkCheckRequest.class);
@@ -177,19 +226,86 @@ public final class PdpServer implements AutoCloseable {
                     "单次批量判定最多 " + config.maxPageSize() + " 个对象，收到 "
                             + request.objects().size());
         }
-        var objects = new ArrayList<ObjectRef>(request.objects().size());
-        request.objects().forEach(wire -> objects.add(ref(wire)));
+        var subject = subject(request.subject());
+        var relation = new Rel(request.relation());
+        var at = resolveAt(request.at());
 
-        // 整批在同一个 Ctx 里跑：共享 Memo，属性也只预取一次
-        var decisions = Ctx.run(
-                context(subject(request.subject()), request.at(), request.context()),
-                () -> checker.checkAll(objects, new Rel(request.relation())));
+        var order = new ArrayList<ObjectRef>(request.objects().size());
+        request.objects().forEach(wire -> order.add(ref(wire)));
 
-        var results = new ArrayList<Wire.BulkDecision>(decisions.size());
-        decisions.forEach((object, decision) -> results.add(new Wire.BulkDecision(
-                new Wire.Ref(object.type().name(), object.id()), decision.allowed())));
+        var answers = new LinkedHashMap<ObjectRef, Boolean>();
+        var pending = new ArrayList<ObjectRef>();
+        for (var object : order) {
+            var key = cacheKey(subject, object, relation, at, request.context(), false);
+            var hit = key == null ? null : config.cache().get(key);
+            if (hit == null) {
+                pending.add(object);
+            } else {
+                answers.put(object, hit);
+            }
+        }
+
+        if (!pending.isEmpty()) {
+            // 整批在同一个 Ctx 里跑：共享 Memo，属性也只预取一次
+            var decisions = Ctx.run(context(subject, at, request.context()),
+                    () -> checker.checkAll(pending, relation));
+            decisions.forEach((object, decision) -> {
+                answers.put(object, decision.allowed());
+                var key = cacheKey(subject, object, relation, at, request.context(), false);
+                if (key != null) {
+                    config.cache().put(key, decision.allowed());
+                }
+            });
+        }
+
+        var results = new ArrayList<Wire.BulkDecision>(order.size());
+        order.forEach(object -> results.add(new Wire.BulkDecision(
+                new Wire.Ref(object.type().name(), object.id()), answers.get(object))));
         return new Wire.BulkCheckResponse(results);
     }
+
+    /**
+     * 判定要在哪个坐标上求值。
+     *
+     * <p>请求给了坐标就用它；没给则看是否配置了陈旧窗口——配了就钉到一个刷新过的水位上。
+     * 钉住的坐标同时是缓存键与求值坐标，两者必须一致，否则缓存里存的是另一个世界的答案。
+     */
+    private Revision resolveAt(Long requested) {
+        if (requested != null) {
+            return new Revision(requested);
+        }
+        if (config.staleness().isZero()) {
+            return Revision.HEAD;
+        }
+        var snapshot = pinned;
+        long now = System.nanoTime();
+        if (snapshot != null && now - snapshot.nanos() < config.staleness().toNanos()) {
+            return snapshot.revision();
+        }
+        var fresh = config.revisions().head();
+        if (fresh.isHead()) {
+            return Revision.HEAD;
+        }
+        pinned = new Pinned(fresh, now);
+        return fresh;
+    }
+
+    /** @return 缓存键；不可缓存时返回 {@code null} */
+    private DecisionCache.Key cacheKey(SubjectRef subject, ObjectRef object, Rel relation,
+                                       Revision at, Map<String, Object> contextAttrs,
+                                       boolean wantExplain) {
+        if (config.cache() == DecisionCache.NONE || at.isHead() || wantExplain) {
+            return null;
+        }
+        if (contextAttrs != null && !contextAttrs.isEmpty()) {
+            // 判定依赖请求自带的属性：塞进键会让键空间爆炸，不塞进去就是缓存污染
+            return null;
+        }
+        return new DecisionCache.Key(subject, object, relation, at);
+    }
+
+    /** 钉住的坐标水位。 */
+    private record Pinned(Revision revision, long nanos) {}
 
     private Object lookup(HttpExchange exchange, byte[] body) throws IOException {        var request = JSON.readValue(body, Wire.LookupRequest.class);
         int limit = Math.min(
@@ -199,7 +315,8 @@ public final class PdpServer implements AutoCloseable {
         var plan = planner.plan(new ObjectType(request.objectType()),
                 new Rel(request.relation()), cursor, limit);
 
-        var found = Ctx.run(context(subject(request.subject()), request.at(), request.context()),
+        var found = Ctx.run(
+                context(subject(request.subject()), resolveAt(request.at()), request.context()),
                 () -> config.executor().execute(plan).toList());
 
         var objects = new ArrayList<Wire.Ref>(found.size());
@@ -290,10 +407,10 @@ public final class PdpServer implements AutoCloseable {
         return body;
     }
 
-    private Ctx.Request context(SubjectRef subject, Long at, Map<String, Object> attrs) {
+    private Ctx.Request context(SubjectRef subject, Revision at, Map<String, Object> attrs) {
         var request = Ctx.Request.of(subject);
-        if (at != null) {
-            request = request.at(new Revision(at));
+        if (!at.isHead()) {
+            request = request.at(at);
         }
         return attrs == null ? request : request.withContextAttrs(attrs);
     }

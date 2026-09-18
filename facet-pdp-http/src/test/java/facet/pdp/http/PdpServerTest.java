@@ -1,6 +1,10 @@
 package facet.pdp.http;
 
+import facet.core.eval.Ctx;
+import facet.core.ir.Rel;
 import facet.core.ir.Revision;
+import facet.core.ir.SubjectRef;
+import facet.core.spi.TupleSource;
 import facet.store.memory.MemoryAttrSource;
 import facet.store.memory.MemoryPlanExecutor;
 import facet.store.memory.MemoryTupleSource;
@@ -13,11 +17,13 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -197,6 +203,148 @@ class PdpServerTest {
         assertThrows(IllegalArgumentException.class, () -> new PdpServer.Config(0,
                 FolderScenario.SCHEMA, tuples, attrs, new MemoryPlanExecutor(tuples, attrs),
                 RelationshipWriter.READ_ONLY, null, 10, false));
+    }
+
+    /** 带具体坐标的请求进缓存：第二次同样的请求不再落到存储。 */
+    @Test
+    void concreteRevisionIsCached() throws IOException {
+        var counting = new CountingCache();
+
+        try (var server = PdpServer.start(cached(counting))) {
+            var body = """
+                    {"subject":{"type":"user","id":"alice"},"object":{"type":"doc","id":"deep"},\
+                    "relation":"view","at":1}""";
+
+            assertTrue(post(server.port(), "/v1/check", body, TOKEN).body().contains("\"allowed\":true"));
+            assertEquals(1, counting.puts);
+            assertTrue(post(server.port(), "/v1/check", body, TOKEN).body().contains("\"allowed\":true"));
+            assertEquals(1, counting.puts, "第二次应当命中缓存，不再写入");
+            assertEquals(1, counting.hits);
+        }
+    }
+
+    /** 读 HEAD 且没配陈旧窗口时一律不缓存：库不替使用方选择陈旧度。 */
+    @Test
+    void headRequestsAreNotCached() throws IOException {
+        var counting = new CountingCache();
+
+        try (var server = PdpServer.start(cached(counting))) {
+            post(server.port(), "/v1/check", checkBody("alice", "deep"), TOKEN);
+            post(server.port(), "/v1/check", checkBody("alice", "deep"), TOKEN);
+
+            assertEquals(0, counting.puts);
+        }
+    }
+
+    /** 带 CONTEXT 属性的请求绕过缓存：判定依赖请求自带属性，缓存它就是污染。 */
+    @Test
+    void contextAttributesBypassCache() throws IOException {
+        var counting = new CountingCache();
+
+        try (var server = PdpServer.start(cached(counting))) {
+            var body = """
+                    {"subject":{"type":"user","id":"alice"},"object":{"type":"doc","id":"deep"},\
+                    "relation":"view","at":1,"context":{"mfa":"true"}}""";
+
+            post(server.port(), "/v1/check", body, TOKEN);
+
+            assertEquals(0, counting.puts);
+        }
+    }
+
+    /** 陈旧窗口需要快照读能力，配置期就该拒绝而不是等第一次请求才炸。 */
+    @Test
+    void stalenessRequiresSnapshotRead() {
+        var tuples = new MemoryTupleSource().write(FolderScenario.TUPLES);
+        var attrs = new MemoryAttrSource();
+
+        assertThrows(IllegalArgumentException.class, () -> new PdpServer.Config(0,
+                FolderScenario.SCHEMA, tuples, attrs, new MemoryPlanExecutor(tuples, attrs),
+                RelationshipWriter.READ_ONLY, (auth, scope) -> true, 10,
+                PdpServer.Config.DEFAULT_MAX_BODY, false,
+                DecisionCache.NONE, RevisionSource.NONE, Duration.ofSeconds(5)));
+    }
+
+    /** 有界缓存必须淘汰：键里含请求带来的对象 id，无界就是客户端可控的内存泄漏。 */
+    @Test
+    void boundedCacheEvicts() {
+        var cache = DecisionCache.bounded(2);
+        var keys = new java.util.ArrayList<DecisionCache.Key>();
+        for (int i = 0; i < 3; i++) {
+            var key = new DecisionCache.Key(FolderScenario.principal("alice"),
+                    FolderScenario.doc("d" + i), FolderScenario.VIEW, new Revision(1));
+            keys.add(key);
+            cache.put(key, true);
+        }
+
+        assertNull(cache.get(keys.get(0)), "最早的键应被淘汰");
+        assertEquals(Boolean.TRUE, cache.get(keys.get(2)));
+    }
+
+    /** 声明支持快照读但忽略坐标的测试替身：让缓存路径可测，不必拉起数据库。 */
+    private PdpServer.Config cached(DecisionCache cache) {
+        var backing = new MemoryTupleSource().write(FolderScenario.TUPLES);
+        var attrs = new MemoryAttrSource();
+        var snapshotting = new SnapshotIgnoringTuples(backing);
+        return new PdpServer.Config(0, FolderScenario.SCHEMA, snapshotting, attrs,
+                new MemoryPlanExecutor(backing, attrs), RelationshipWriter.READ_ONLY,
+                (authorization, scope) -> TOKEN.equals(authorization), 10,
+                PdpServer.Config.DEFAULT_MAX_BODY, false,
+                cache, RevisionSource.NONE, Duration.ZERO);
+    }
+
+    private static final class CountingCache implements DecisionCache {
+
+        private int puts;
+        private int hits;
+
+        @Override
+        public Boolean get(Key key) {
+            var value = delegate.get(key);
+            if (value != null) {
+                hits++;
+            }
+            return value;
+        }
+
+        @Override
+        public void put(Key key, boolean allowed) {
+            puts++;
+            delegate.put(key, allowed);
+        }
+
+        private final DecisionCache delegate = DecisionCache.bounded(64);
+    }
+
+    /**
+     * 声明 {@code snapshotRead} 但忽略坐标。
+     *
+     * <p>只用于验证缓存路径：内存适配器会拒绝非 HEAD 的读（这是对的），而缓存恰恰只在
+     * 带具体坐标时生效，所以需要一个声明了该能力的替身。
+     */
+    private record SnapshotIgnoringTuples(MemoryTupleSource backing) implements TupleSource {
+
+        @Override
+        public java.util.Set<SubjectRef> subjects(facet.core.ir.ObjectRef obj, Rel rel) {
+            return atHead(() -> backing.subjects(obj, rel));
+        }
+
+        @Override
+        public java.util.stream.Stream<facet.core.ir.ObjectRef> objects(
+                SubjectRef subject, Rel rel, facet.core.ir.ObjectType type) {
+            return atHead(() -> backing.objects(subject, rel, type).toList()).stream();
+        }
+
+        @Override
+        public Caps caps() {
+            var inner = backing.caps();
+            return new Caps(inner.reverseIndex(), true, inner.recursiveQuery(), inner.maxFanout());
+        }
+
+        /** 内存适配器拒绝非 HEAD 的读，所以把坐标剥掉再委托。 */
+        private <T> T atHead(java.util.function.Supplier<T> body) {
+            return Ctx.run(Ctx.Request.of(Ctx.current().principal()), body);
+        }
     }
 
     /** 读凭据不能拿来写：能读的客户端拿到判定结果，能写的客户端能改写授权数据本身。 */

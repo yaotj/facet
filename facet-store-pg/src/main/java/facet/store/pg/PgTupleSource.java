@@ -31,25 +31,39 @@ import java.util.stream.Stream;
  * <p><strong>连接来源必须是有界池。</strong>并行扇出下每个算子步骤各取一条连接，
  * 递归还会逐层叠加，{@code Caps.maxFanout} 应当与池容量相称，否则一次 check
  * 就能把池抽干。{@link Connections} 刻意不含池化语义，这个约束由装配方保证。
+ *
+ * <p><strong>多租户建议用 schema-per-tenant。</strong>让 {@link Connections} 交出的连接带上
+ * 各自的 {@code search_path} 即可，表名不变、SQL 不变、IR 不变。加一列 {@code tenant} 的方案
+ * 要改动每一条查询与每一个索引，换来的隔离性还更弱——一次漏加 WHERE 就是跨租户泄漏。
+ * 唯一需要按租户区分的是写锁：{@code namespace} 决定顾问锁的键，不同租户因此不会互相串行。
  */
 public final class PgTupleSource implements TupleSource {
 
-    /** 写者互斥的顾问锁键。任意常量即可，只要全库唯一。 */
-    private static final long WRITER_LOCK = 0x66616365_74777274L;
+    /** 默认命名空间。多租户部署应当每个租户给一个不同的值，避免写入互相串行。 */
+    public static final String DEFAULT_NAMESPACE = "facet";
 
     /** 单批回收的行数上限。一条 DELETE 删完全部历史会形成超长事务并长时间持锁。 */
     private static final int COMPACT_BATCH = 10_000;
 
     private final Connections connections;
     private final int maxFanout;
+    private final long writerLock;
 
-    public PgTupleSource(Connections connections, int maxFanout) {
+    /**
+     * @param namespace 写锁的命名空间。多租户部署每个租户给不同值，写入就不会跨租户串行
+     */
+    public PgTupleSource(Connections connections, int maxFanout, String namespace) {
         this.connections = connections;
         this.maxFanout = maxFanout;
+        this.writerLock = namespace.hashCode() & 0xFFFF_FFFFL;
+    }
+
+    public PgTupleSource(Connections connections, int maxFanout) {
+        this(connections, maxFanout, DEFAULT_NAMESPACE);
     }
 
     public PgTupleSource(Connections connections) {
-        this(connections, 1024);
+        this(connections, 1024, DEFAULT_NAMESPACE);
     }
 
     /** 建表建索引。幂等，可以在每次启动时无条件调用。 */
@@ -83,7 +97,7 @@ public final class PgTupleSource implements TupleSource {
     public Revision apply(Collection<Tuple> writes, Collection<Tuple> revokes) {
         var assigned = new long[1];
         inTransaction(conn -> {
-            lockWriters(conn);
+            lockWriters(conn, writerLock);
             assigned[0] = nextRevision(conn);
             revokeAll(conn, assigned[0], revokes);
             writeAll(conn, assigned[0], writes);
@@ -287,9 +301,9 @@ public final class PgTupleSource implements TupleSource {
     }
 
     /** 顾问锁只活到事务结束，进程崩溃不会留下悬挂锁——这是不用表锁的理由。 */
-    private static void lockWriters(Connection conn) throws SQLException {
+    private static void lockWriters(Connection conn, long key) throws SQLException {
         try (var ps = conn.prepareStatement("SELECT pg_advisory_xact_lock(?)")) {
-            ps.setLong(1, WRITER_LOCK);
+            ps.setLong(1, key);
             ps.executeQuery().close();
         }
     }

@@ -10,6 +10,7 @@ import facet.core.spi.PlanExecutor;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -70,9 +71,15 @@ public final class PgPlanExecutor implements PlanExecutor {
         try (var conn = connections.get(); var ps = conn.prepareStatement(query.sql())) {
             bind(ps, query.params(), plan);
             var out = new ArrayList<ObjectRef>();
+            // 类型名在结果集里高度重复（一次反查通常只有一两个类型），驻留掉能省下
+            // 与行数同阶的 ObjectType 分配。这是符号表思路里唯一已被 EXPLAIN 证实
+            // 落在热路径上的一段；把 Rel/ObjectType 全面编码成 int 目前没有测量支撑，
+            // 10 万元组下瓶颈在 SQL 而不在对象头。
+            var types = new HashMap<String, ObjectType>();
             try (var rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    out.add(new ObjectRef(new ObjectType(rs.getString(1)), rs.getString(2)));
+                    var type = types.computeIfAbsent(rs.getString(1), ObjectType::new);
+                    out.add(new ObjectRef(type, rs.getString(2)));
                 }
             }
             // 一次物化：Stream 逃出 try-with-resources 会带着一个已关闭的连接。
