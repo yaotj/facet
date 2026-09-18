@@ -281,6 +281,66 @@ class PdpServerTest {
         assertEquals(Boolean.TRUE, cache.get(keys.get(2)));
     }
 
+    /**
+     * 换 schema 必须连带清缓存。
+     *
+     * <p>缓存键里有元组坐标但没有策略版本：策略换了而缓存不清，PDP 会继续按旧策略回答，
+     * 而且旧键永远不会自然过期——元组坐标根本没动。
+     */
+    @Test
+    void reloadFlushesTheCache() throws IOException {
+        var counting = new CountingCache();
+
+        try (var server = PdpServer.start(cached(counting))) {
+            var body = """
+                    {"subject":{"type":"user","id":"alice"},"object":{"type":"doc","id":"deep"},\
+                    "relation":"view","at":1}""";
+            var first = post(server.port(), "/v1/check", body, TOKEN);
+            assertEquals(200, first.status(), "首次请求应当成功: " + first.body());
+            assertEquals(1, counting.puts, "首次请求应当写入缓存");
+
+            server.reload(FolderScenario.SCHEMA);
+            assertEquals(1, counting.clears);
+
+            post(server.port(), "/v1/check", body, TOKEN);
+            assertEquals(2, counting.puts, "缓存已清，应当重新求值并写入");
+        }
+    }
+
+    /** 远程下发 schema 默认拒绝：能改 schema 比能改元组的影响面更大。 */
+    @Test
+    void remoteSchemaIsDeniedByDefault() throws IOException {
+        var response = post("/v1/schema", "{\"version\":1,\"types\":{}}", TOKEN);
+
+        assertEquals(405, response.status(), response.body());
+    }
+
+    /** 显式装上解码器之后才能下发，而且要 WRITE 能力。 */
+    @Test
+    void remoteSchemaLoadsWhenDecoderIsWired() throws IOException {
+        var tuples = new MemoryTupleSource().write(FolderScenario.TUPLES);
+        var attrs = new MemoryAttrSource();
+        var reloaded = new AtomicReference<byte[]>();
+        var config = new PdpServer.Config(0, FolderScenario.SCHEMA, tuples, attrs,
+                new MemoryPlanExecutor(tuples, attrs), RelationshipWriter.READ_ONLY,
+                (authorization, scope) -> TOKEN.equals(authorization), 10,
+                PdpServer.Config.DEFAULT_MAX_BODY, false,
+                DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO,
+                body -> {
+                    reloaded.set(body);
+                    return FolderScenario.SCHEMA;
+                });
+
+        try (var server = PdpServer.start(config)) {
+            var response = post(server.port(), "/v1/schema", "{\"version\":1}", TOKEN);
+
+            assertEquals(200, response.status(), response.body());
+            assertTrue(response.body().contains("\"reloaded\":true"), response.body());
+            assertNotNull(reloaded.get());
+            assertEquals(FolderScenario.SCHEMA, server.schema());
+        }
+    }
+
     /** 声明支持快照读但忽略坐标的测试替身：让缓存路径可测，不必拉起数据库。 */
     private PdpServer.Config cached(DecisionCache cache) {
         var backing = new MemoryTupleSource().write(FolderScenario.TUPLES);
@@ -297,6 +357,7 @@ class PdpServerTest {
 
         private int puts;
         private int hits;
+        private int clears;
 
         @Override
         public Boolean get(Key key) {
@@ -311,6 +372,12 @@ class PdpServerTest {
         public void put(Key key, boolean allowed) {
             puts++;
             delegate.put(key, allowed);
+        }
+
+        @Override
+        public void clear() {
+            clears++;
+            delegate.clear();
         }
 
         private final DecisionCache delegate = DecisionCache.bounded(64);

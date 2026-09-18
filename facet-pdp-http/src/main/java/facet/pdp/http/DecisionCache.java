@@ -38,6 +38,15 @@ public interface DecisionCache {
     /** 写入结论。实现可以自行淘汰甚至直接丢弃：这里存的是可重算的结果，不是权威数据。 */
     void put(Key key, boolean allowed);
 
+    /**
+     * 清空。
+     *
+     * <p>换 schema 时必须调用：缓存键里有元组坐标，但<strong>没有</strong>策略版本。
+     * 策略改了而缓存不清，PDP 会继续按旧策略回答——这是一次静默的授权错误，
+     * 而且旧键永远不会自然过期，因为元组坐标根本没动。
+     */
+    void clear();
+
     /** 不缓存。默认值：缓存是可选优化，不该是默认行为。 */
     DecisionCache NONE = new DecisionCache() {
 
@@ -48,6 +57,10 @@ public interface DecisionCache {
 
         @Override
         public void put(Key key, boolean allowed) {
+        }
+
+        @Override
+        public void clear() {
         }
     };
 
@@ -78,6 +91,11 @@ public interface DecisionCache {
             @Override
             public void put(Key key, boolean allowed) {
                 guarded.put(key, allowed);
+            }
+
+            @Override
+            public void clear() {
+                guarded.clear();
             }
         };
     }

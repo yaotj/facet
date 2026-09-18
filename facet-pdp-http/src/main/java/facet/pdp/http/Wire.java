@@ -99,6 +99,9 @@ final class Wire {
     /** 统一错误体。 */
     record ErrorResponse(String error, String message) {}
 
+    /** {@code POST /v1/schema} 响应体。{@code relations} 是新策略里的关系总数，便于核对下发是否完整。 */
+    record SchemaResponse(boolean reloaded, int types, int relations) {}
+
     private static void require(Object value, String field) {
         if (value == null) {
             throw new IllegalArgumentException("缺少必填字段: " + field);

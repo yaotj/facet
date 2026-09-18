@@ -11,6 +11,7 @@ import facet.core.eval.Explains;
 import facet.core.eval.Planner;
 import facet.core.eval.Schema;
 import facet.core.eval.SchemaException;
+import facet.core.eval.Validator;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
@@ -80,7 +81,8 @@ public final class PdpServer implements AutoCloseable {
                          boolean exposeExplain,
                          DecisionCache cache,
                          RevisionSource revisions,
-                         Duration staleness) {
+                         Duration staleness,
+                         SchemaDecoder schemaDecoder) {
 
         /** 默认请求体上限：1 MiB。写入批量再大也应当分批提交。 */
         public static final int DEFAULT_MAX_BODY = 1 << 20;
@@ -100,8 +102,8 @@ public final class PdpServer implements AutoCloseable {
             if (maxBodyBytes <= 0) {
                 throw new IllegalArgumentException("请求体上限必须为正");
             }
-            if (cache == null || revisions == null || staleness == null) {
-                throw new IllegalArgumentException("缓存相关配置用 NONE / ZERO 表达关闭，不用 null");
+            if (cache == null || revisions == null || staleness == null || schemaDecoder == null) {
+                throw new IllegalArgumentException("可选能力用 NONE / DENIED / ZERO 表达关闭，不用 null");
             }
             if (staleness.isNegative()) {
                 throw new IllegalArgumentException("陈旧窗口不能为负");
@@ -113,23 +115,33 @@ public final class PdpServer implements AutoCloseable {
             }
         }
 
-        /** 不缓存、请求体上限取默认值。 */
+        /** 不缓存、不接受远程 schema、请求体上限取默认值。 */
         public Config(int port, Schema schema, TupleSource tuples, AttrSource attrs,
                       PlanExecutor executor, RelationshipWriter writer,
                       Authenticator authenticator, int maxPageSize, boolean exposeExplain) {
             this(port, schema, tuples, attrs, executor, writer, authenticator,
                     maxPageSize, DEFAULT_MAX_BODY, exposeExplain,
-                    DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO);
+                    DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO, SchemaDecoder.DENIED);
         }
 
-        /** 不缓存，指定请求体上限。 */
+        /** 不缓存、不接受远程 schema，指定请求体上限。 */
         public Config(int port, Schema schema, TupleSource tuples, AttrSource attrs,
                       PlanExecutor executor, RelationshipWriter writer,
                       Authenticator authenticator, int maxPageSize, int maxBodyBytes,
                       boolean exposeExplain) {
             this(port, schema, tuples, attrs, executor, writer, authenticator,
                     maxPageSize, maxBodyBytes, exposeExplain,
-                    DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO);
+                    DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO, SchemaDecoder.DENIED);
+        }
+
+        /** 指定缓存与陈旧窗口，不接受远程 schema。 */
+        public Config(int port, Schema schema, TupleSource tuples, AttrSource attrs,
+                      PlanExecutor executor, RelationshipWriter writer,
+                      Authenticator authenticator, int maxPageSize, int maxBodyBytes,
+                      boolean exposeExplain, DecisionCache cache, RevisionSource revisions,
+                      Duration staleness) {
+            this(port, schema, tuples, attrs, executor, writer, authenticator, maxPageSize,
+                    maxBodyBytes, exposeExplain, cache, revisions, staleness, SchemaDecoder.DENIED);
         }
     }
 
@@ -141,15 +153,17 @@ public final class PdpServer implements AutoCloseable {
     private final HttpServer server;
     private final ExecutorService executor;
     private final Config config;
-    private final Checker checker;
-    private final Planner planner;
+    /** 当前生效的策略。整体替换而不是逐字段改，在途请求要么全看旧的要么全看新的。 */
+    private volatile Policy policy;
     /** 钉住的坐标水位。volatile 就够：过期重取是幂等的，多取一次只是多一次水位查询。 */
     private volatile Pinned pinned;
 
+    /** schema 与由它派生的求值器。三者必须同时替换，否则会用新 schema 配旧 Planner。 */
+    private record Policy(Schema schema, Checker checker, Planner planner) {}
+
     private PdpServer(Config config) throws IOException {
         this.config = config;
-        this.checker = new Checker(config.schema(), config.tuples(), config.attrs());
-        this.planner = new Planner(config.schema(), config.tuples().caps());
+        this.policy = policyOf(config.schema());
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
         this.server = HttpServer.create(new InetSocketAddress(config.port()), 0);
         server.setExecutor(executor);
@@ -161,7 +175,34 @@ public final class PdpServer implements AutoCloseable {
                 exchange -> handle(exchange, Authenticator.Scope.READ, this::lookup));
         server.createContext("/v1/relationships",
                 exchange -> handle(exchange, Authenticator.Scope.WRITE, this::write));
+        server.createContext("/v1/schema",
+                exchange -> handle(exchange, Authenticator.Scope.WRITE, this::loadSchema));
         server.createContext("/v1/healthz", PdpServer::healthz);
+    }
+
+    private Policy policyOf(Schema schema) {
+        return new Policy(schema,
+                new Checker(schema, config.tuples(), config.attrs()),
+                new Planner(schema, config.tuples().caps()));
+    }
+
+    /**
+     * 换掉当前生效的策略。
+     *
+     * <p><strong>必须连带清空判定缓存。</strong>缓存键里有元组坐标但没有策略版本，
+     * 策略换了而缓存不清，PDP 会继续按旧策略回答，而且旧键不会自然过期——元组坐标没动。
+     *
+     * <p>先校验再替换：一份不合法的 schema 不能把正在服务的策略换掉。
+     */
+    public void reload(Schema schema) {
+        Validator.validate(schema);
+        policy = policyOf(schema);
+        config.cache().clear();
+    }
+
+    /** 当前生效的 schema。 */
+    public Schema schema() {
+        return policy.schema();
     }
 
     /** 启动并开始监听。端口冲突等启动失败会包成 {@link UncheckedIOException}。 */
@@ -207,7 +248,7 @@ public final class PdpServer implements AutoCloseable {
         }
 
         var decision = Ctx.run(context(subject, at, request.context()),
-                () -> checker.check(object, relation));
+                () -> policy.checker().check(object, relation));
         if (key != null) {
             config.cache().put(key, decision.allowed());
         }
@@ -253,7 +294,7 @@ public final class PdpServer implements AutoCloseable {
         if (!pending.isEmpty()) {
             // 整批在同一个 Ctx 里跑：共享 Memo，属性也只预取一次
             var decisions = Ctx.run(context(subject, at, request.context()),
-                    () -> checker.checkAll(pending, relation));
+                    () -> policy.checker().checkAll(pending, relation));
             decisions.forEach((object, decision) -> {
                 answers.put(object, decision.allowed());
                 var key = cacheKey(subject, object, relation, at, request.context(), false);
@@ -317,7 +358,7 @@ public final class PdpServer implements AutoCloseable {
                 request.limit() == null ? config.maxPageSize() : Math.max(request.limit(), 1),
                 config.maxPageSize());
         var cursor = request.cursor() == null ? Cursor.START : new Cursor(request.cursor());
-        var plan = planner.plan(new ObjectType(request.objectType()),
+        var plan = policy.planner().plan(new ObjectType(request.objectType()),
                 new Rel(request.relation()), cursor, limit);
 
         var found = Ctx.run(
@@ -335,6 +376,21 @@ public final class PdpServer implements AutoCloseable {
         var request = JSON.readValue(body, Wire.WriteRequest.class);
         var revision = config.writer().apply(tuples(request.writes()), tuples(request.deletes()));
         return new Wire.WriteResponse(revision.value());
+    }
+
+    /**
+     * 远程下发 schema。
+     *
+     * <p>要 {@code WRITE} 能力：能改 schema 比能改元组的影响面更大——前者改的是授权语义本身。
+     * 解码器默认拒绝，所以这个写入面必须被显式打开。
+     */
+    private Object loadSchema(HttpExchange exchange, byte[] body) {
+        var schema = config.schemaDecoder().decode(body);
+        reload(schema);
+        int relations = schema.types().values().stream()
+                .mapToInt(type -> type.relations().size())
+                .sum();
+        return new Wire.SchemaResponse(true, schema.types().size(), relations);
     }
 
     private static void healthz(HttpExchange exchange) throws IOException {

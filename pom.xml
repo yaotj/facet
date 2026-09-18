@@ -79,8 +79,10 @@
         <subproject>facet-dsl-rbac</subproject>
         <subproject>facet-dsl-abac</subproject>
 
-        <!-- driven 适配器 -->
-        <subproject>facet-store-memory</subproject>
+        <!-- IR 的编解码。独立模块，内核因此不必为序列化带上 JSON 依赖 -->
+        <subproject>facet-ir-json</subproject>
+
+        <!-- driven 适配器 -->        <subproject>facet-store-memory</subproject>
         <subproject>facet-store-pg</subproject>
         <subproject>facet-fanout-structured</subproject>
 
