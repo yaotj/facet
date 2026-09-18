@@ -8,11 +8,37 @@
 
     <artifactId>facet-pdp-http</artifactId>
     <name>Facet PDP :: HTTP</name>
-    <description>driving 适配器：把内核暴露成远程决策点。</description>
+    <description>driving 适配器：把 check / lookupResources / 关系写入暴露成 HTTP。</description>
 
     <dependencies>
         <dependency>
+            <groupId>io.github.yaotj</groupId>
             <artifactId>facet-core</artifactId>
+        </dependency>
+
+        <!--
+          JSON 用 Jackson 而不是手写解析器。网络边界上的解析器就是攻击面，手写一个是拿
+          正确性换零依赖，划不来。它只出现在 driving 适配器里，内核仍然零依赖。
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-store-memory</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-testkit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

@@ -7,4 +7,6 @@
  */
 module facet.fanout.structured {
     requires facet.core;
+
+    exports facet.fanout.structured;
 }

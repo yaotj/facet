@@ -1,9 +1,12 @@
 /**
- * RBAC 前端：角色定义 -&gt; {@link facet.core.ir.Perm}。
+ * RBAC 编译前端：角色与角色继承编译成 {@code Perm} IR。
  *
- * <p>RBAC 不是与 ReBAC 并列的模型，而是它的退化情形：role 就是一个不挂在具体资源上的
- * relation。所以这里不需要任何独立的求值逻辑，只是把角色继承展成 {@code AnyOf}。
+ * <p>角色继承编成 {@code Ref} 而不是在前端展开成元组：展开会让"给 admin 也加一条 viewer"
+ * 变成数据迁移，而引用只是 schema 变更。这也是"多个前端共享一份 IR"的直接收益——
+ * RBAC 不需要自己的求值器。
  */
 module facet.dsl.rbac {
     requires facet.core;
+
+    exports facet.dsl.rbac;
 }

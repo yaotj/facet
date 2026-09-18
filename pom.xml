@@ -29,7 +29,42 @@
         -->
         <maven-compiler-plugin.version>3.16.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.3</maven-surefire-plugin.version>
+        <junit.version>5.13.4</junit.version>
+        <postgresql.version>42.7.4</postgresql.version>
+        <testcontainers.version>1.21.3</testcontainers.version>
+        <jackson.version>2.18.2</jackson.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.junit</groupId>
+                <artifactId>junit-bom</artifactId>
+                <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>${postgresql.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <!--
       4.1.0 model 能按目录自动发现子项目，但这里保留显式清单：它是唯一记录
@@ -46,6 +81,7 @@
 
         <!-- driven 适配器 -->
         <subproject>facet-store-memory</subproject>
+        <subproject>facet-store-pg</subproject>
         <subproject>facet-fanout-structured</subproject>
 
         <!-- driving 适配器 -->

@@ -1,10 +1,12 @@
 /**
- * ABAC 前端：属性策略 -&gt; {@link facet.core.ir.Perm.Guarded}。
+ * ABAC 编译前端：属性条件的书写方式，产出 {@code Cond} 与 {@code Guarded}。
  *
- * <p>这个前端最容易写出反查不了的 schema，因为它天生倾向于引用外部属性。所以它的
- * 编译产物必须能通过内核的可反查校验；把属性标成
- * {@link facet.core.ir.AttrKey.Tier#EXTERNAL} 是有代价的选择，不是默认。
+ * <p>它不引入任何求值能力——条件语言仍然是内核里那个刻意不图灵完备的 {@code Cond}。
+ * 前端的价值在于把 {@code Tier}（能否反查）和 {@code Kind}（比较语义）这两个最容易漏填、
+ * 漏了又最致命的字段提到函数名上。
  */
 module facet.dsl.abac {
     requires facet.core;
+
+    exports facet.dsl.abac;
 }

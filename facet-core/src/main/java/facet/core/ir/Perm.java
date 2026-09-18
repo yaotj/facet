@@ -9,17 +9,20 @@ import java.util.List;
  * 因为 {@code sealed} + 穷尽 {@code switch}，任何新算子都会让全部求值器、计划编译器
  * 和存储适配器同时编译失败——爆炸半径由 javac 列出来，不靠文档纪律。
  *
+ * <p>算子是<strong>有限树</strong>，递归不在树里而在环境里：{@link Ref} 指回 schema 中的
+ * 关系定义，任意深度的层级由名字解析闭合，而不是靠嵌套更多 {@link Through}。
+ *
  * <p>各模型的落点：
  * <ul>
  *   <li>ACL —— 只用 {@link Direct}</li>
  *   <li>RBAC —— {@link Direct} + {@link AnyOf}，元组挂在全局单例对象上</li>
- *   <li>ReBAC —— 核心是 {@link Through}</li>
+ *   <li>ReBAC —— 核心是 {@link Through} + {@link Ref}</li>
  *   <li>ABAC —— 核心是 {@link Guarded}</li>
  * </ul>
  */
 public sealed interface Perm {
 
-    /** 直接元组 {@code obj#rel@subject}。 */
+    /** 直接元组 {@code obj#rel@subject}。对应 Zanzibar 的 {@code _this}。 */
     record Direct(Rel rel) implements Perm {}
 
     /** 并：任一子项成立。 */
@@ -60,4 +63,16 @@ public sealed interface Perm {
 
     /** 条件：ABAC 的唯一挂载点。条件的能力等级决定这条路径能否被反查，见 {@link AttrKey.Tier}。 */
     record Guarded(Perm base, Cond cond) implements Perm {}
+
+    /**
+     * 引用：当前对象类型上另一条关系的定义（Zanzibar 的 {@code computed_userset}）。
+     *
+     * <p>这是递归的唯一入口。{@code folder#view = Direct(viewer) | Through(parent, Ref(view))}
+     * 表达任意深度的层级：环由 schema 的名字解析闭合，表达式树本身仍然有限。
+     *
+     * <p>代价是 schema 加载期必须多做三件事，全在 {@code Validator} 里：引用可解析、
+     * 递归环上至少消耗一个元组（否则左递归会栈溢出）、递归环不得穿过 {@code Minus} 的
+     * 否定侧（非分层否定没有唯一最小不动点，check 与反查会收敛到不同答案）。
+     */
+    record Ref(Rel rel) implements Perm {}
 }

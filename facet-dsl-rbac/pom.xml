@@ -8,12 +8,24 @@
 
     <artifactId>facet-dsl-rbac</artifactId>
     <name>Facet DSL :: RBAC</name>
-    <description>角色式前端。role 编译成挂在全局单例对象上的 relation。</description>
+    <description>角色式前端。角色继承编译成 Ref，而不是在前端展开成元组。</description>
 
     <dependencies>
         <dependency>
             <groupId>io.github.yaotj</groupId>
             <artifactId>facet-core</artifactId>
+        </dependency>
+
+        <!-- 前端的验收标准是"产物能被内核直接求值"，所以测试要跑在一个真实适配器上 -->
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-store-memory</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

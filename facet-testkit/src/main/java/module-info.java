@@ -7,4 +7,6 @@
  */
 module facet.testkit {
     requires facet.core;
+
+    exports facet.testkit;
 }

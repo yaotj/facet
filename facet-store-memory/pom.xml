@@ -15,5 +15,20 @@
             <groupId>io.github.yaotj</groupId>
             <artifactId>facet-core</artifactId>
         </dependency>
+
+        <!--
+          判定矩阵 golden file 的验证放在这里，而不是 facet-core：内核不能依赖存储，
+          而这套断言必须跑在一个真实的 TupleSource 上才有意义。
+        -->
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-testkit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

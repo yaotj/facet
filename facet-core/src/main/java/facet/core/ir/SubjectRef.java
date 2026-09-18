@@ -1,5 +1,7 @@
 package facet.core.ir;
 
+import java.util.Comparator;
+
 /**
  * 元组的主体侧。
  *
@@ -8,6 +10,27 @@ package facet.core.ir;
  * RBAC 的角色和 ReBAC 的组继承就只能靠展开成具体用户，写放大会失控。
  */
 public sealed interface SubjectRef {
+
+    /**
+     * 确定的全序。
+     *
+     * <p>端口要求 {@code subjects()} 按此顺序返回，否则 explain 的分支顺序会随存储实现变化，
+     * golden file 就只能对某一个适配器成立——而跨适配器一致性正是这套架构要保证的东西。
+     * 排序键刻意与 SQL 的 {@code (subject_type, subject_id, subject_rel)} 对齐。
+     */
+    Comparator<SubjectRef> ORDER = Comparator
+            .comparing((SubjectRef s) -> switch (s) {
+                case Principal(var type, _) -> type.name();
+                case Userset(var object, _) -> object.type().name();
+            })
+            .thenComparing(s -> switch (s) {
+                case Principal(_, var id) -> id;
+                case Userset(var object, _) -> object.id();
+            })
+            .thenComparing(s -> switch (s) {
+                case Principal _ -> "";
+                case Userset(_, var relation) -> relation.name();
+            });
 
     /** 具体主体：用户、服务账号。 */
     record Principal(ObjectType type, String id) implements SubjectRef {

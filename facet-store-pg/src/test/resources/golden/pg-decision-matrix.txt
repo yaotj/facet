@@ -1,0 +1,268 @@
+user:alice | doc:deep | view | ALLOW
+    AnyOf
+      MISS doc:deep#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            MISS folder:team#viewer
+            Through(parent)
+              Ref(view)
+                AnyOf
+                  HIT folder:eng#viewer
+user:alice | doc:deep | edit | DENY
+    Minus
+      MISS doc:deep#editor
+      MISS doc:deep#banned
+user:alice | doc:deep | view_mfa | ALLOW
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:deep#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                MISS folder:team#viewer
+                Through(parent)
+                  Ref(view)
+                    AnyOf
+                      HIT folder:eng#viewer
+      COND true [CONTEXT] Cmp[op=EQ, left=Attr[key=AttrKey[name=mfa, kind=BOOL, tier=CONTEXT]], right=Lit[scalar=true]]
+user:alice | doc:private | view | DENY
+    AnyOf
+      MISS doc:private#viewer
+      MISS doc:private#parent
+user:alice | doc:private | edit | DENY
+    Minus
+      MISS doc:private#editor
+      MISS doc:private#banned
+user:alice | doc:private | view_mfa | DENY
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:private#viewer
+          MISS doc:private#parent
+user:alice | doc:readme | view | ALLOW
+    AnyOf
+      MISS doc:readme#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            HIT folder:eng#viewer
+user:alice | doc:readme | edit | DENY
+    DENIED-BY
+      HIT doc:readme#banned
+user:alice | doc:readme | view_mfa | ALLOW
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:readme#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                HIT folder:eng#viewer
+      COND true [CONTEXT] Cmp[op=EQ, left=Attr[key=AttrKey[name=mfa, kind=BOOL, tier=CONTEXT]], right=Lit[scalar=true]]
+user:alice | doc:spec | view | ALLOW
+    AnyOf
+      MISS doc:spec#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            HIT folder:eng#viewer
+user:alice | doc:spec | edit | DENY
+    Minus
+      MISS doc:spec#editor
+      MISS doc:spec#banned
+user:alice | doc:spec | view_mfa | ALLOW
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:spec#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                HIT folder:eng#viewer
+      COND true [CONTEXT] Cmp[op=EQ, left=Attr[key=AttrKey[name=mfa, kind=BOOL, tier=CONTEXT]], right=Lit[scalar=true]]
+user:bob | doc:deep | view | DENY
+    AnyOf
+      MISS doc:deep#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            MISS folder:team#viewer
+            Through(parent)
+              Ref(view)
+                AnyOf
+                  Direct(viewer)
+                    MISS group:eng#member
+                  MISS folder:eng#parent
+user:bob | doc:deep | edit | DENY
+    Minus
+      MISS doc:deep#editor
+      MISS doc:deep#banned
+user:bob | doc:deep | view_mfa | DENY
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:deep#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                MISS folder:team#viewer
+                Through(parent)
+                  Ref(view)
+                    AnyOf
+                      Direct(viewer)
+                        MISS group:eng#member
+                      MISS folder:eng#parent
+user:bob | doc:private | view | ALLOW
+    AnyOf
+      HIT doc:private#viewer
+user:bob | doc:private | edit | DENY
+    Minus
+      MISS doc:private#editor
+      MISS doc:private#banned
+user:bob | doc:private | view_mfa | ALLOW
+    Guarded
+      Ref(view)
+        AnyOf
+          HIT doc:private#viewer
+      COND true [CONTEXT] Cmp[op=EQ, left=Attr[key=AttrKey[name=mfa, kind=BOOL, tier=CONTEXT]], right=Lit[scalar=true]]
+user:bob | doc:readme | view | DENY
+    AnyOf
+      MISS doc:readme#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            Direct(viewer)
+              MISS group:eng#member
+            MISS folder:eng#parent
+user:bob | doc:readme | edit | DENY
+    Minus
+      MISS doc:readme#editor
+      MISS doc:readme#banned
+user:bob | doc:readme | view_mfa | DENY
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:readme#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                Direct(viewer)
+                  MISS group:eng#member
+                MISS folder:eng#parent
+user:bob | doc:spec | view | DENY
+    AnyOf
+      MISS doc:spec#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            Direct(viewer)
+              MISS group:eng#member
+            MISS folder:eng#parent
+user:bob | doc:spec | edit | DENY
+    Minus
+      MISS doc:spec#editor
+      MISS doc:spec#banned
+user:bob | doc:spec | view_mfa | DENY
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:spec#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                Direct(viewer)
+                  MISS group:eng#member
+                MISS folder:eng#parent
+user:carol | doc:deep | view | ALLOW
+    AnyOf
+      MISS doc:deep#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            MISS folder:team#viewer
+            Through(parent)
+              Ref(view)
+                AnyOf
+                  Direct(viewer)
+                    HIT group:eng#member
+user:carol | doc:deep | edit | DENY
+    Minus
+      MISS doc:deep#editor
+      MISS doc:deep#banned
+user:carol | doc:deep | view_mfa | ALLOW
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:deep#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                MISS folder:team#viewer
+                Through(parent)
+                  Ref(view)
+                    AnyOf
+                      Direct(viewer)
+                        HIT group:eng#member
+      COND true [CONTEXT] Cmp[op=EQ, left=Attr[key=AttrKey[name=mfa, kind=BOOL, tier=CONTEXT]], right=Lit[scalar=true]]
+user:carol | doc:private | view | DENY
+    AnyOf
+      MISS doc:private#viewer
+      MISS doc:private#parent
+user:carol | doc:private | edit | DENY
+    Minus
+      MISS doc:private#editor
+      MISS doc:private#banned
+user:carol | doc:private | view_mfa | DENY
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:private#viewer
+          MISS doc:private#parent
+user:carol | doc:readme | view | ALLOW
+    AnyOf
+      MISS doc:readme#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            Direct(viewer)
+              HIT group:eng#member
+user:carol | doc:readme | edit | DENY
+    Minus
+      MISS doc:readme#editor
+      MISS doc:readme#banned
+user:carol | doc:readme | view_mfa | ALLOW
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:readme#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                Direct(viewer)
+                  HIT group:eng#member
+      COND true [CONTEXT] Cmp[op=EQ, left=Attr[key=AttrKey[name=mfa, kind=BOOL, tier=CONTEXT]], right=Lit[scalar=true]]
+user:carol | doc:spec | view | ALLOW
+    AnyOf
+      MISS doc:spec#viewer
+      Through(parent)
+        Ref(view)
+          AnyOf
+            Direct(viewer)
+              HIT group:eng#member
+user:carol | doc:spec | edit | DENY
+    Minus
+      MISS doc:spec#editor
+      MISS doc:spec#banned
+user:carol | doc:spec | view_mfa | ALLOW
+    Guarded
+      Ref(view)
+        AnyOf
+          MISS doc:spec#viewer
+          Through(parent)
+            Ref(view)
+              AnyOf
+                Direct(viewer)
+                  HIT group:eng#member
+      COND true [CONTEXT] Cmp[op=EQ, left=Attr[key=AttrKey[name=mfa, kind=BOOL, tier=CONTEXT]], right=Lit[scalar=true]]

@@ -15,5 +15,17 @@
             <groupId>io.github.yaotj</groupId>
             <artifactId>facet-core</artifactId>
         </dependency>
+
+        <!-- 断言 DSL 产出与 testkit 里手写的那份 IR 逐字段相同 -->
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-testkit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

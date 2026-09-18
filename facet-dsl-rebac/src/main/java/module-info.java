@@ -1,10 +1,14 @@
 /**
- * ReBAC 前端：关系式 schema 文本 -&gt; {@link facet.core.ir.Perm}。
+ * ReBAC 编译前端：把关系模型的书写方式编译成内核的 {@code Perm} / {@code Schema}。
  *
- * <p>前端只有一个职责：<strong>编译</strong>。如果某天这里需要自己实现 check，
- * 说明 IR 表达力不够，该扩 IR 并承担 major 版本代价，而不是给前端开后门——那条路
- * 通向"每个模型一个 check 实现"，跨模型反查就再也做不到了。
+ * <p>单向依赖 core，内核完全不知道它的存在——"一个内核多个前端"这条架构主张就体现在这里：
+ * RBAC / ABAC 前端各自独立，共享的是同一份 IR 而不是同一套代码。
+ *
+ * <p>形态选的是 Java builder 而不是文本 DSL：零依赖、编译期类型安全，也不需要先定 IR 的
+ * 序列化格式。将来要热加载再加文本前端，它同样只产出 {@code Perm}，内核不必改。
  */
 module facet.dsl.rebac {
     requires facet.core;
+
+    exports facet.dsl.rebac;
 }
