@@ -15,6 +15,9 @@ import java.util.Map;
  */
 public interface AttrSource {
 
+    /** 没有属性。给不需要属性源的测试替身用。 */
+    AttrSource EMPTY = (key, obj) -> null;
+
     /**
      * 取对象上的属性值。
      *
