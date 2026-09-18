@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import facet.core.eval.Checker;
 import facet.core.eval.Ctx;
+import facet.core.eval.DeadlineExceededException;
 import facet.core.eval.EvalException;
 import facet.core.eval.Expander;
 import facet.core.eval.Explains;
@@ -73,39 +74,43 @@ public final class PdpServer implements AutoCloseable {
                          Duration staleness,
                          SchemaDecoder schemaDecoder,
                          AuditSink audit,
-                         Metrics metrics) {
+                         Metrics metrics,
+                         Duration deadline) {
 
-        /** 全关。缓存、陈旧读、远程下发 schema、审计、观测都是要显式打开的能力。 */
+        /** 全关。缓存、陈旧读、远程下发 schema、审计、观测、期限都是要显式打开的能力。 */
         public static final Extras NONE = new Extras(DecisionCache.NONE, RevisionSource.NONE,
-                Duration.ZERO, SchemaDecoder.DENIED, AuditSink.NONE, Metrics.NOOP);
+                Duration.ZERO, SchemaDecoder.DENIED, AuditSink.NONE, Metrics.NOOP, Duration.ZERO);
 
         public Extras {
             if (cache == null || revisions == null || staleness == null
-                    || schemaDecoder == null || audit == null || metrics == null) {
+                    || schemaDecoder == null || audit == null || metrics == null || deadline == null) {
                 throw new IllegalArgumentException("可选能力用 NONE / DENIED / ZERO 表达关闭，不用 null");
             }
             if (staleness.isNegative()) {
                 throw new IllegalArgumentException("陈旧窗口不能为负");
             }
+            if (deadline.isNegative()) {
+                throw new IllegalArgumentException("请求期限不能为负；不设期限用 Duration.ZERO");
+            }
         }
 
         /** 只缓存带具体坐标的请求。 */
         public Extras withCache(DecisionCache sink) {
-            return new Extras(sink, revisions, staleness, schemaDecoder, audit, metrics);
+            return new Extras(sink, revisions, staleness, schemaDecoder, audit, metrics, deadline);
         }
 
         /** 接受有界陈旧，读 HEAD 的请求因此也能进缓存。 */
         public Extras withStaleness(RevisionSource source, Duration window) {
-            return new Extras(cache, source, window, schemaDecoder, audit, metrics);
+            return new Extras(cache, source, window, schemaDecoder, audit, metrics, deadline);
         }
 
         /** 打开远程下发 schema。 */
         public Extras withSchemaDecoder(SchemaDecoder decoder) {
-            return new Extras(cache, revisions, staleness, decoder, audit, metrics);
+            return new Extras(cache, revisions, staleness, decoder, audit, metrics, deadline);
         }
 
         public Extras withAudit(AuditSink sink) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, sink, metrics);
+            return new Extras(cache, revisions, staleness, schemaDecoder, sink, metrics, deadline);
         }
 
         /**
@@ -115,7 +120,24 @@ public final class PdpServer implements AutoCloseable {
          * 每请求一个虚拟线程，一次深层判定会调它几十次。
          */
         public Extras withMetrics(Metrics sink) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, audit, sink);
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, sink, deadline);
+        }
+
+        /**
+         * 给每个请求设一个墙钟期限，到期返回 {@code 504}。
+         *
+         * <p>与工作预算（{@code Ctx.DEFAULT_MAX_NODES}）分工不同：预算限总工作量、是确定性的，
+         * 挡的是"这个形状会把存储打穿"；期限限墙钟、是不确定性的，挡的是"存储今天比平时慢十倍"。
+         * 后者在工作量上完全合规，但调用方已经等不起了。
+         *
+         * <p>默认关闭，因为它的代价是<strong>同一个请求在空闲时通过、在高负载时超时</strong>。
+         * 这个取舍只有知道自己 SLA 形态的人能做。
+         *
+         * <p>期限会被传导到语句超时与并发扇出的 scope 超时上（见 {@code Deadline#clamp}），
+         * 所以它是真的上限，不是"检查点之间的近似"。
+         */
+        public Extras withDeadline(Duration budget) {
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, budget);
         }
     }
 
@@ -506,6 +528,11 @@ public final class PdpServer implements AutoCloseable {
                 error(exchange, 400, "bad_request", e.getMessage());
             } catch (UnsupportedOperationException e) {
                 error(exchange, 405, "not_supported", e.getMessage());
+            } catch (DeadlineExceededException e) {
+                // 504 而不是 422：期限到了说明这次"慢"，换个时刻可能就过了，重试是合理的；
+                // 而 422 的语义是"这个请求本身无法求值"，网关不会重试它
+                exchange.getResponseHeaders().add("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
+                error(exchange, 504, "deadline_exceeded", "判定超过请求期限");
             } catch (EvalException e) {
                 error(exchange, 422, "cannot_evaluate", e.getMessage());
             } catch (StorageException e) {
@@ -547,6 +574,11 @@ public final class PdpServer implements AutoCloseable {
     private Ctx.Request context(SubjectRef subject, Revision at, Map<String, Object> attrs) {
         // 观测挂点随请求上下文走：Checker / Expander 都从 Ctx 取，不必在构造期注入
         var request = Ctx.Request.of(subject).withMetrics(config.extras().metrics());
+        var deadline = config.extras().deadline();
+        if (!deadline.isZero()) {
+            // 期限从这里开始算，也就是从解析完请求体、真正开始求值的那一刻
+            request = request.withDeadline(deadline);
+        }
         if (!at.isHead()) {
             request = request.at(at);
         }

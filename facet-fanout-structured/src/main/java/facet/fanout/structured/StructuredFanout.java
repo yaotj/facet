@@ -1,5 +1,7 @@
 package facet.fanout.structured;
 
+import facet.core.eval.Ctx;
+import facet.core.eval.DeadlineExceededException;
 import facet.core.spi.Fanout;
 
 import java.time.Duration;
@@ -65,8 +67,9 @@ public final class StructuredFanout implements Fanout {
 
     @Override
     public <T> List<T> all(List<Callable<T>> tasks) throws Exception {
+        var budget = scopeTimeout();
         try (var scope = StructuredTaskScope.open(Joiner.<T>allSuccessfulOrThrow(),
-                config -> config.withTimeout(timeout))) {
+                config -> config.withTimeout(budget))) {
             tasks.forEach(task -> scope.fork(throttled(task)));
             return scope.join().map(Subtask::get).toList();
         }
@@ -76,8 +79,9 @@ public final class StructuredFanout implements Fanout {
     public <T> List<T> firstMatch(List<Callable<T>> tasks, Predicate<T> hit) throws Exception {
         Predicate<Subtask<? extends T>> stop =
                 subtask -> subtask.state() == Subtask.State.SUCCESS && hit.test(subtask.get());
+        var budget = scopeTimeout();
         try (var scope = StructuredTaskScope.open(Joiner.<T>allUntil(stop),
-                config -> config.withTimeout(timeout))) {
+                config -> config.withTimeout(budget))) {
             tasks.forEach(task -> scope.fork(throttled(task)));
             var completed = scope.join().toList();
 
@@ -97,6 +101,27 @@ public final class StructuredFanout implements Fanout {
             }
             return results;
         }
+    }
+
+    /**
+     * 本次 scope 实际使用的超时。
+     *
+     * <p>取自身超时与请求剩余期限的较小值。不收紧的话，嵌套的 {@code Through} 每层都会开一个
+     * 新 scope 并各拿一份完整的超时预算——十跳就是十倍，每一层都"遵守"了自己的上限，
+     * 而请求总时长没有任何约束。这正是"期限只有被传导下去才真的生效"的那一处。
+     */
+    private Duration scopeTimeout() {
+        var deadline = Ctx.deadline();
+        if (!deadline.bounded()) {
+            return timeout;
+        }
+        var left = deadline.remaining();
+        if (left.isZero()) {
+            // withTimeout(ZERO) 会立刻超时，但抛出来的是超时异常而不是期限异常，
+            // 调用方就分不清"存储慢"和"这次请求的时间用完了"
+            throw new DeadlineExceededException("请求期限已到，不再开启新的扇出");
+        }
+        return deadline.clamp(timeout);
     }
 
     /**

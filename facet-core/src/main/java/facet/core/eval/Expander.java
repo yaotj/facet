@@ -51,8 +51,9 @@ public final class Expander {
      * @return 按 {@link SubjectRef#ORDER} 排序，保证跨适配器结果可比对
      */
     public SequencedSet<SubjectRef.Principal> subjects(ObjectRef obj, Rel rel) {
+        var request = Ctx.current();
         var found = expand(schema.relation(obj.type(), rel).rewrite(), obj,
-                Trail.root(Ctx.current().maxNodes()));
+                Trail.root(request.maxNodes(), request.deadline()));
         return found.stream()
                 .sorted(SubjectRef.ORDER)
                 .collect(Collectors.toCollection(LinkedHashSet::new));

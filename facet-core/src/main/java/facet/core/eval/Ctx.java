@@ -46,6 +46,17 @@ public final class Ctx {
     }
 
     /**
+     * 当前请求的期限，上下文未绑定时返回 {@link Deadline#NONE}。
+     *
+     * <p>给适配器用。与 {@link #current()} 的区别是它<strong>不要求</strong>上下文已绑定：
+     * 建表、回收历史这类运维操作不在任何请求里，它们同样要创建语句，而那时去要一个
+     * 请求上下文只会让运维路径必须包一层假的 {@code Ctx.run}。
+     */
+    public static Deadline deadline() {
+        return CURRENT.isBound() ? CURRENT.get().deadline() : Deadline.NONE;
+    }
+
+    /**
      * 所有判定入口的唯一门。绑定的寿命就是这次调用，退出即失效，没有 {@code ThreadLocal} 那种需要清理的残留。
      *
      * @param body 求值体；扇出出去的子任务自动继承这份绑定，不必手工传递
@@ -65,6 +76,7 @@ public final class Ctx {
      *                     读到已经失效的判定
      * @param maxDepth     递归节点数上限，语义见 {@link #withMaxDepth(int)}
      * @param maxNodes     单次判定的求值节点总数上限，语义见 {@link #withMaxNodes(int)}
+     * @param deadline     整个请求的墙钟期限，语义见 {@link #withDeadline(java.time.Duration)}
      */
     public record Request(SubjectRef principal,
                           Revision at,
@@ -72,6 +84,7 @@ public final class Ctx {
                           Memo memo,
                           int maxDepth,
                           int maxNodes,
+                          Deadline deadline,
                           Metrics metrics) {
 
         public Request {
@@ -82,23 +95,27 @@ public final class Ctx {
             if (maxNodes <= 0) {
                 throw new IllegalArgumentException("工作预算必须为正");
             }
+            if (deadline == null) {
+                throw new IllegalArgumentException("不设期限用 Deadline.NONE，不用 null");
+            }
             if (metrics == null) {
                 throw new IllegalArgumentException("观测挂点用 Metrics.NOOP 表达关闭，不用 null");
             }
         }
 
-        /** 默认请求：读最新、无上下文属性、不观测。 */
+        /** 默认请求：读最新、无上下文属性、无期限、不观测。 */
         public static Request of(SubjectRef principal) {
             return new Request(principal, Revision.HEAD, Map.of(), new Memo(),
-                    DEFAULT_MAX_DEPTH, DEFAULT_MAX_NODES, Metrics.NOOP);
+                    DEFAULT_MAX_DEPTH, DEFAULT_MAX_NODES, Deadline.NONE, Metrics.NOOP);
         }
 
         public Request withContextAttrs(Map<String, Object> attrs) {
-            return new Request(principal, at, attrs, memo, maxDepth, maxNodes, metrics);
+            return new Request(principal, at, attrs, memo, maxDepth, maxNodes, deadline, metrics);
         }
 
         public Request at(Revision revision) {
-            return new Request(principal, revision, contextAttrs, memo, maxDepth, maxNodes, metrics);
+            return new Request(principal, revision, contextAttrs, memo, maxDepth, maxNodes,
+                    deadline, metrics);
         }
 
         /**
@@ -108,7 +125,8 @@ public final class Ctx {
          * 都要关心观测；而观测恰恰是请求作用域的横切关注点，{@code ScopedValue} 就是为它准备的。
          */
         public Request withMetrics(Metrics sink) {
-            return new Request(principal, at, contextAttrs, memo, maxDepth, maxNodes, sink);
+            return new Request(principal, at, contextAttrs, memo, maxDepth, maxNodes,
+                    deadline, sink);
         }
 
         /**
@@ -120,7 +138,8 @@ public final class Ctx {
          * "深目录下的文档突然没权限"，而 explain 里只有一行 {@code DEPTH-EXCEEDED}。
          */
         public Request withMaxDepth(int depth) {
-            return new Request(principal, at, contextAttrs, memo, depth, maxNodes, metrics);
+            return new Request(principal, at, contextAttrs, memo, depth, maxNodes,
+                    deadline, metrics);
         }
 
         /**
@@ -134,7 +153,22 @@ public final class Ctx {
          * schema 的某条路径应该改成可反查的关系，而不是让 check 每次去遍历半张图。
          */
         public Request withMaxNodes(int nodes) {
-            return new Request(principal, at, contextAttrs, memo, maxDepth, nodes, metrics);
+            return new Request(principal, at, contextAttrs, memo, maxDepth, nodes,
+                    deadline, metrics);
+        }
+
+        /**
+         * 给整个请求设一个墙钟期限。
+         *
+         * <p>期限从<strong>调用这个方法的时刻</strong>开始算，并且覆盖整个请求——
+         * {@code checkAll} 的一整批共用同一个期限，而不是每个对象各拿一份。这正是它与
+         * {@link #withMaxNodes(int)} 的分工：预算按判定算工作量，期限按请求算时间。
+         *
+         * <p>它与预算是互补的，不是二选一。见 {@link Deadline} 里的对比。
+         */
+        public Request withDeadline(java.time.Duration budget) {
+            return new Request(principal, at, contextAttrs, memo, maxDepth, maxNodes,
+                    Deadline.after(budget), metrics);
         }
     }
 }

@@ -109,8 +109,9 @@ public final class Checker {
      * 会把存储的实现细节泄进整个内核签名。{@code RuntimeException} 原样透出以保留原始栈。
      */
     public Decision check(Perm perm, ObjectRef obj) {
+        var request = Ctx.current();
         try {
-            return eval(perm, obj, Trail.root(Ctx.current().maxNodes()));
+            return eval(perm, obj, Trail.root(request.maxNodes(), request.deadline()));
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
