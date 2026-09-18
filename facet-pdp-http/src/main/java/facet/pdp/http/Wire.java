@@ -90,6 +90,21 @@ final class Wire {
     /** {@code POST /v1/lookup-resources} 响应体。{@code nextCursor} 为 null 表示已到末页。 */
     record LookupResponse(List<Ref> objects, String nextCursor) {}
 
+    /** {@code POST /v1/lookup-subjects} 请求体：谁能对这个对象做这件事。 */
+    record LookupSubjectsRequest(Ref object,
+                                 String relation,
+                                 Long at,
+                                 Map<String, Object> context) {
+
+        LookupSubjectsRequest {
+            require(object, "object");
+            require(relation, "relation");
+        }
+    }
+
+    /** {@code POST /v1/lookup-subjects} 响应体，已展开到具体主体并按确定顺序排列。 */
+    record LookupSubjectsResponse(List<Ref> subjects) {}
+
     /** {@code POST /v1/relationships} 请求体。 */
     record WriteRequest(List<TupleJson> writes, List<TupleJson> deletes) {}
 

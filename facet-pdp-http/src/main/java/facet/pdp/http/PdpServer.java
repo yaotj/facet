@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import facet.core.eval.Checker;
 import facet.core.eval.Ctx;
 import facet.core.eval.EvalException;
+import facet.core.eval.Expander;
 import facet.core.eval.Explains;
 import facet.core.eval.Planner;
 import facet.core.eval.Schema;
@@ -59,15 +60,58 @@ import java.util.concurrent.Executors;
 public final class PdpServer implements AutoCloseable {
 
     /**
+     * 可选能力。
+     *
+     * <p>单独成一个 record 而不是继续往 {@link Config} 上加字段：位置参数到十几个之后，
+     * 调用点已经没人能看出第 12 个 {@code Duration} 是什么意思了。这里全部有默认值，
+     * 用 wither 逐项打开，读起来就是一串"启用了什么"。
+     */
+    public record Extras(DecisionCache cache,
+                         RevisionSource revisions,
+                         Duration staleness,
+                         SchemaDecoder schemaDecoder,
+                         AuditSink audit) {
+
+        /** 全关。缓存、陈旧读、远程下发 schema、审计都是要显式打开的能力。 */
+        public static final Extras NONE = new Extras(DecisionCache.NONE, RevisionSource.NONE,
+                Duration.ZERO, SchemaDecoder.DENIED, AuditSink.NONE);
+
+        public Extras {
+            if (cache == null || revisions == null || staleness == null
+                    || schemaDecoder == null || audit == null) {
+                throw new IllegalArgumentException("可选能力用 NONE / DENIED / ZERO 表达关闭，不用 null");
+            }
+            if (staleness.isNegative()) {
+                throw new IllegalArgumentException("陈旧窗口不能为负");
+            }
+        }
+
+        /** 只缓存带具体坐标的请求。 */
+        public Extras withCache(DecisionCache sink) {
+            return new Extras(sink, revisions, staleness, schemaDecoder, audit);
+        }
+
+        /** 接受有界陈旧，读 HEAD 的请求因此也能进缓存。 */
+        public Extras withStaleness(RevisionSource source, Duration window) {
+            return new Extras(cache, source, window, schemaDecoder, audit);
+        }
+
+        /** 打开远程下发 schema。 */
+        public Extras withSchemaDecoder(SchemaDecoder decoder) {
+            return new Extras(cache, revisions, staleness, decoder, audit);
+        }
+
+        public Extras withAudit(AuditSink sink) {
+            return new Extras(cache, revisions, staleness, schemaDecoder, sink);
+        }
+    }
+
+    /**
      * @param port          0 表示由系统分配，便于测试
      * @param schema        已通过 {@code Validator} 的 schema
      * @param maxPageSize   分页与批量的硬上限
      * @param maxBodyBytes  请求体硬上限
      * @param exposeExplain 是否允许通过 {@code explain=true} 取回判定树
-     * @param cache         判定缓存。只缓存带具体坐标的请求，见 {@link DecisionCache}
-     * @param revisions     坐标水位来源。配了它并且 {@code staleness} 为正，读 HEAD 的请求
-     *                      才会被钉到具体坐标并进缓存
-     * @param staleness     可接受的陈旧窗口。{@code ZERO} 表示不接受，HEAD 请求一律不缓存
      */
     public record Config(int port,
                          Schema schema,
@@ -79,18 +123,11 @@ public final class PdpServer implements AutoCloseable {
                          int maxPageSize,
                          int maxBodyBytes,
                          boolean exposeExplain,
-                         DecisionCache cache,
-                         RevisionSource revisions,
-                         Duration staleness,
-                         SchemaDecoder schemaDecoder) {
+                         Extras extras) {
 
         /** 默认请求体上限：1 MiB。写入批量再大也应当分批提交。 */
         public static final int DEFAULT_MAX_BODY = 1 << 20;
 
-        /**
-         * 全部校验放在构造期：这些参数一旦配错，症状要么是安全事故（不鉴权），要么是第一次请求
-         * 才炸（陈旧窗口配在不支持快照读的存储上），两种都比启动失败糟糕得多。
-         */
         public Config {
             if (authenticator == null) {
                 throw new IllegalArgumentException(
@@ -102,48 +139,34 @@ public final class PdpServer implements AutoCloseable {
             if (maxBodyBytes <= 0) {
                 throw new IllegalArgumentException("请求体上限必须为正");
             }
-            if (cache == null || revisions == null || staleness == null || schemaDecoder == null) {
-                throw new IllegalArgumentException("可选能力用 NONE / DENIED / ZERO 表达关闭，不用 null");
-            }
-            if (staleness.isNegative()) {
-                throw new IllegalArgumentException("陈旧窗口不能为负");
+            if (extras == null) {
+                throw new IllegalArgumentException("可选能力用 Extras.NONE 表达全关，不用 null");
             }
             // 钉住坐标读就是快照读；存储不支持却配了陈旧窗口，会在第一次请求时才炸
-            if (!staleness.isZero() && !tuples.caps().snapshotRead()) {
+            if (!extras.staleness().isZero() && !tuples.caps().snapshotRead()) {
                 throw new IllegalArgumentException(
                         "配置了陈旧窗口，但存储未声明 snapshotRead：钉住坐标读需要快照读能力");
             }
         }
 
-        /** 不缓存、不接受远程 schema、请求体上限取默认值。 */
+        /** 全部可选能力关闭、请求体上限取默认值。 */
         public Config(int port, Schema schema, TupleSource tuples, AttrSource attrs,
                       PlanExecutor executor, RelationshipWriter writer,
                       Authenticator authenticator, int maxPageSize, boolean exposeExplain) {
             this(port, schema, tuples, attrs, executor, writer, authenticator,
-                    maxPageSize, DEFAULT_MAX_BODY, exposeExplain,
-                    DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO, SchemaDecoder.DENIED);
+                    maxPageSize, DEFAULT_MAX_BODY, exposeExplain, Extras.NONE);
         }
 
-        /** 不缓存、不接受远程 schema，指定请求体上限。 */
+        /** 全部可选能力关闭，指定请求体上限。 */
         public Config(int port, Schema schema, TupleSource tuples, AttrSource attrs,
                       PlanExecutor executor, RelationshipWriter writer,
                       Authenticator authenticator, int maxPageSize, int maxBodyBytes,
                       boolean exposeExplain) {
             this(port, schema, tuples, attrs, executor, writer, authenticator,
-                    maxPageSize, maxBodyBytes, exposeExplain,
-                    DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO, SchemaDecoder.DENIED);
-        }
-
-        /** 指定缓存与陈旧窗口，不接受远程 schema。 */
-        public Config(int port, Schema schema, TupleSource tuples, AttrSource attrs,
-                      PlanExecutor executor, RelationshipWriter writer,
-                      Authenticator authenticator, int maxPageSize, int maxBodyBytes,
-                      boolean exposeExplain, DecisionCache cache, RevisionSource revisions,
-                      Duration staleness) {
-            this(port, schema, tuples, attrs, executor, writer, authenticator, maxPageSize,
-                    maxBodyBytes, exposeExplain, cache, revisions, staleness, SchemaDecoder.DENIED);
+                    maxPageSize, maxBodyBytes, exposeExplain, Extras.NONE);
         }
     }
+
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final System.Logger LOG = System.getLogger(PdpServer.class.getName());
@@ -158,8 +181,8 @@ public final class PdpServer implements AutoCloseable {
     /** 钉住的坐标水位。volatile 就够：过期重取是幂等的，多取一次只是多一次水位查询。 */
     private volatile Pinned pinned;
 
-    /** schema 与由它派生的求值器。三者必须同时替换，否则会用新 schema 配旧 Planner。 */
-    private record Policy(Schema schema, Checker checker, Planner planner) {}
+    /** schema 与由它派生的四个求值器。必须同时替换，否则会用新 schema 配旧 Planner。 */
+    private record Policy(Schema schema, Checker checker, Planner planner, Expander expander) {}
 
     private PdpServer(Config config) throws IOException {
         this.config = config;
@@ -173,6 +196,8 @@ public final class PdpServer implements AutoCloseable {
                 exchange -> handle(exchange, Authenticator.Scope.READ, this::checkBulk));
         server.createContext("/v1/lookup-resources",
                 exchange -> handle(exchange, Authenticator.Scope.READ, this::lookup));
+        server.createContext("/v1/lookup-subjects",
+                exchange -> handle(exchange, Authenticator.Scope.READ, this::lookupSubjects));
         server.createContext("/v1/relationships",
                 exchange -> handle(exchange, Authenticator.Scope.WRITE, this::write));
         server.createContext("/v1/schema",
@@ -183,7 +208,8 @@ public final class PdpServer implements AutoCloseable {
     private Policy policyOf(Schema schema) {
         return new Policy(schema,
                 new Checker(schema, config.tuples(), config.attrs()),
-                new Planner(schema, config.tuples().caps()));
+                new Planner(schema, config.tuples().caps()),
+                new Expander(schema, config.tuples(), config.attrs()));
     }
 
     /**
@@ -197,7 +223,7 @@ public final class PdpServer implements AutoCloseable {
     public void reload(Schema schema) {
         Validator.validate(schema);
         policy = policyOf(schema);
-        config.cache().clear();
+        config.extras().cache().clear();
     }
 
     /** 当前生效的 schema。 */
@@ -241,8 +267,11 @@ public final class PdpServer implements AutoCloseable {
         var at = resolveAt(request.at());
         var key = cacheKey(subject, object, relation, at, request.context(), wantExplain);
         if (key != null) {
-            var hit = config.cache().get(key);
+            var hit = config.extras().cache().get(key);
             if (hit != null) {
+                // 命中也要留痕：审计记的是"谁问到了什么答案"，缓存是服务端的实现细节。
+                // 漏掉命中的那部分，同一串访问在审计里会时有时无，而这取决于缓存是否恰好过期
+                config.extras().audit().decided(subject, object, relation, hit, at);
                 return new Wire.CheckResponse(hit, null);
             }
         }
@@ -250,8 +279,9 @@ public final class PdpServer implements AutoCloseable {
         var decision = Ctx.run(context(subject, at, request.context()),
                 () -> policy.checker().check(object, relation));
         if (key != null) {
-            config.cache().put(key, decision.allowed());
+            config.extras().cache().put(key, decision.allowed());
         }
+        config.extras().audit().decided(subject, object, relation, decision.allowed(), at);
         return new Wire.CheckResponse(decision.allowed(),
                 wantExplain ? Explains.render(decision.explain()) : null);
     }
@@ -283,7 +313,7 @@ public final class PdpServer implements AutoCloseable {
         var pending = new ArrayList<ObjectRef>();
         for (var object : order) {
             var key = cacheKey(subject, object, relation, at, request.context(), false);
-            var hit = key == null ? null : config.cache().get(key);
+            var hit = key == null ? null : config.extras().cache().get(key);
             if (hit == null) {
                 pending.add(object);
             } else {
@@ -299,7 +329,7 @@ public final class PdpServer implements AutoCloseable {
                 answers.put(object, decision.allowed());
                 var key = cacheKey(subject, object, relation, at, request.context(), false);
                 if (key != null) {
-                    config.cache().put(key, decision.allowed());
+                    config.extras().cache().put(key, decision.allowed());
                 }
             });
         }
@@ -320,15 +350,15 @@ public final class PdpServer implements AutoCloseable {
         if (requested != null) {
             return new Revision(requested);
         }
-        if (config.staleness().isZero()) {
+        if (config.extras().staleness().isZero()) {
             return Revision.HEAD;
         }
         var snapshot = pinned;
         long now = System.nanoTime();
-        if (snapshot != null && now - snapshot.nanos() < config.staleness().toNanos()) {
+        if (snapshot != null && now - snapshot.nanos() < config.extras().staleness().toNanos()) {
             return snapshot.revision();
         }
-        var fresh = config.revisions().head();
+        var fresh = config.extras().revisions().head();
         if (fresh.isHead()) {
             return Revision.HEAD;
         }
@@ -340,7 +370,7 @@ public final class PdpServer implements AutoCloseable {
     private DecisionCache.Key cacheKey(SubjectRef subject, ObjectRef object, Rel relation,
                                        Revision at, Map<String, Object> contextAttrs,
                                        boolean wantExplain) {
-        if (config.cache() == DecisionCache.NONE || at.isHead() || wantExplain) {
+        if (config.extras().cache() == DecisionCache.NONE || at.isHead() || wantExplain) {
             return null;
         }
         if (contextAttrs != null && !contextAttrs.isEmpty()) {
@@ -372,6 +402,27 @@ public final class PdpServer implements AutoCloseable {
         return new Wire.LookupResponse(objects, next);
     }
 
+    /**
+     * 展开：谁能对这个对象做这件事。
+     *
+     * <p>与反查方向相反，走的是正向端口，因此不需要反向索引。语义是"在给定上下文下"——
+     * 条件里的 CONTEXT 属性来自请求，所以审计想问"如果没过 MFA 呢"，换个上下文再问一次即可。
+     */
+    private Object lookupSubjects(HttpExchange exchange, byte[] body) throws IOException {
+        var request = JSON.readValue(body, Wire.LookupSubjectsRequest.class);
+        var object = ref(request.object());
+        var relation = new Rel(request.relation());
+        // 展开不针对某个主体，上下文里的 principal 只是占位
+        var placeholder = new SubjectRef.Principal(object.type(), object.id());
+
+        var found = Ctx.run(context(placeholder, resolveAt(request.at()), request.context()),
+                () -> policy.expander().subjects(object, relation));
+
+        var subjects = new ArrayList<Wire.Ref>(found.size());
+        found.forEach(subject -> subjects.add(new Wire.Ref(subject.type().name(), subject.id())));
+        return new Wire.LookupSubjectsResponse(subjects);
+    }
+
     private Object write(HttpExchange exchange, byte[] body) throws IOException {
         var request = JSON.readValue(body, Wire.WriteRequest.class);
         var revision = config.writer().apply(tuples(request.writes()), tuples(request.deletes()));
@@ -384,8 +435,7 @@ public final class PdpServer implements AutoCloseable {
      * <p>要 {@code WRITE} 能力：能改 schema 比能改元组的影响面更大——前者改的是授权语义本身。
      * 解码器默认拒绝，所以这个写入面必须被显式打开。
      */
-    private Object loadSchema(HttpExchange exchange, byte[] body) {
-        var schema = config.schemaDecoder().decode(body);
+    private Object loadSchema(HttpExchange exchange, byte[] body) {        var schema = config.extras().schemaDecoder().decode(body);
         reload(schema);
         int relations = schema.types().values().stream()
                 .mapToInt(type -> type.relations().size())

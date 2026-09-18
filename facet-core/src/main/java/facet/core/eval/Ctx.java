@@ -2,6 +2,7 @@ package facet.core.eval;
 
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
+import facet.core.spi.Metrics;
 
 import java.util.Map;
 import java.util.function.Supplier;
@@ -59,34 +60,41 @@ public final class Ctx {
                           Revision at,
                           Map<String, Object> contextAttrs,
                           Memo memo,
-                          int maxDepth) {
+                          int maxDepth,
+                          Metrics metrics) {
 
-        /** 拷贝 {@code contextAttrs}：整批扇出的子任务都在并发读它，调用方事后改这个 map 就是竞态。 */
         public Request {
             contextAttrs = Map.copyOf(contextAttrs);
             if (maxDepth <= 0) {
                 throw new IllegalArgumentException("深度上限必须为正");
             }
+            if (metrics == null) {
+                throw new IllegalArgumentException("观测挂点用 Metrics.NOOP 表达关闭，不用 null");
+            }
         }
 
-        /** HEAD 版本、无上下文属性、独立 {@link Memo}。要让一批判定共享记忆化，就必须复用同一个 {@code Request}。 */
+        /** 默认请求：读最新、无上下文属性、不观测。 */
         public static Request of(SubjectRef principal) {
-            return new Request(principal, Revision.HEAD, Map.of(), new Memo(), DEFAULT_MAX_DEPTH);
+            return new Request(principal, Revision.HEAD, Map.of(), new Memo(),
+                    DEFAULT_MAX_DEPTH, Metrics.NOOP);
+        }
+
+        public Request withContextAttrs(Map<String, Object> attrs) {
+            return new Request(principal, at, attrs, memo, maxDepth, metrics);
+        }
+
+        public Request at(Revision revision) {
+            return new Request(principal, revision, contextAttrs, memo, maxDepth, metrics);
         }
 
         /**
-         * 整体替换而不是合并：合并语义下"删掉一个属性"无从表达，条件求值会读到本该消失的值。
+         * 装上观测挂点。
          *
-         * <p>必须在求值开始前设置完。{@link Memo.Key} 只有 {@code (perm, obj)}，不含上下文属性，
-         * 所以沿用同一个 {@code memo} 换一套属性会命中按旧属性算出的结果。
+         * <p>走上下文而不是构造器参数：求值器已经有四个协作对象，再加一个会让每个调用点
+         * 都要关心观测；而观测恰恰是请求作用域的横切关注点，{@code ScopedValue} 就是为它准备的。
          */
-        public Request withContextAttrs(Map<String, Object> attrs) {
-            return new Request(principal, at, attrs, memo, maxDepth);
-        }
-
-        /** 钉住一致性坐标，用于"按当时的数据重放这次判定"。要求元组源声明 {@code snapshotRead}，否则读到的仍是 HEAD。 */
-        public Request at(Revision revision) {
-            return new Request(principal, revision, contextAttrs, memo, maxDepth);
+        public Request withMetrics(Metrics sink) {
+            return new Request(principal, at, contextAttrs, memo, maxDepth, sink);
         }
 
         /**
@@ -98,7 +106,7 @@ public final class Ctx {
          * "深目录下的文档突然没权限"，而 explain 里只有一行 {@code DEPTH-EXCEEDED}。
          */
         public Request withMaxDepth(int depth) {
-            return new Request(principal, at, contextAttrs, memo, depth);
+            return new Request(principal, at, contextAttrs, memo, depth, metrics);
         }
     }
 }

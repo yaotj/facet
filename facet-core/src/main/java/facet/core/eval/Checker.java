@@ -49,9 +49,16 @@ public final class Checker {
         this(schema, tuples, attrs, Fanout.SEQUENTIAL);
     }
 
-    /** 单点判定入口。必须在 {@link Ctx#run} 之内调用——主体、版本、{@link Memo} 都从上下文取。 */
+    /**
+     * 单点判定入口。必须在 {@link Ctx#run} 之内调用——主体、版本、{@link Memo} 都从上下文取。
+     *
+     * <p>观测挂点落在这一层，因为只有这里知道关系名。
+     */
     public Decision check(ObjectRef obj, Rel rel) {
-        return check(schema.relation(obj.type(), rel).rewrite(), obj);
+        long started = System.nanoTime();
+        var decision = check(schema.relation(obj.type(), rel).rewrite(), obj);
+        Ctx.current().metrics().decision(rel, decision.allowed(), System.nanoTime() - started);
+        return decision;
     }
 
     /**
@@ -80,10 +87,16 @@ public final class Checker {
                 .forEach(type -> keys.addAll(Attrs.localKeys(schema, type, rel)));
 
         // 没有属性要预取就不必套装饰器，省掉一次无谓的 map 构造
-        var batch = keys.isEmpty()
-                ? this
-                : new Checker(schema, tuples, PrefetchedAttrs.of(attrs, keys, objects), fanout);
-        objects.forEach(obj -> out.put(obj, batch.check(obj, rel)));
+        var batch = this;
+        if (!keys.isEmpty()) {
+            // 上报批量大小：它一旦长期是 1，说明预取没生效——而结果完全正确，只是慢。
+            // 埋点放这里而不是 PrefetchedAttrs：那是个工具类，不该隐含"必须在请求上下文内"。
+            var metrics = Ctx.current().metrics();
+            keys.forEach(key -> metrics.attributeBatch(key, objects.size()));
+            batch = new Checker(schema, tuples, PrefetchedAttrs.of(attrs, keys, objects), fanout);
+        }
+        var evaluator = batch;
+        objects.forEach(obj -> out.put(obj, evaluator.check(obj, rel)));
         return out;
     }
 
@@ -230,6 +243,8 @@ public final class Checker {
 
     /** {@code Caps.maxFanout} 是硬上限：宁可拒绝，也不要一个查询把存储打穿。 */
     private void guardFanout(int width, String where) {
+        // 先上报再判上限：撞上限之前的增长趋势才是能用来预警的信号
+        Ctx.current().metrics().fanout(where, width);
         int limit = tuples.caps().maxFanout();
         if (width > limit) {
             throw new EvalException(where + " 扇出 " + width + " 超过存储声明的上限 " + limit);

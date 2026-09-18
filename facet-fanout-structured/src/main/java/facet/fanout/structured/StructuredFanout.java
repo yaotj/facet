@@ -5,6 +5,7 @@ import facet.core.spi.Fanout;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.StructuredTaskScope;
 import java.util.concurrent.StructuredTaskScope.Joiner;
 import java.util.concurrent.StructuredTaskScope.Subtask;
@@ -33,30 +34,40 @@ import java.util.function.Predicate;
 public final class StructuredFanout implements Fanout {
 
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(5);
+    /** 默认并发上限。取值参考典型连接池容量，而不是"越大越好"。 */
+    private static final int DEFAULT_CONCURRENCY = 32;
 
     private final Duration timeout;
+    private final Semaphore permits;
 
     /**
-     * @param timeout 一次扇出等待全部分支的上限；非正值不代表"不限时"，而会让每次判定立刻超时失败，
-     *                因此当场拒绝
+     * @param timeout     单次扇出的等待上限
+     * @param concurrency 同时在跑的子任务数上限
      */
-    public StructuredFanout(Duration timeout) {
+    public StructuredFanout(Duration timeout, int concurrency) {
         if (timeout == null || timeout.isNegative() || timeout.isZero()) {
             throw new IllegalArgumentException("扇出超时必须为正");
         }
+        if (concurrency <= 0) {
+            throw new IllegalArgumentException("并发上限必须为正");
+        }
         this.timeout = timeout;
+        this.permits = new Semaphore(concurrency);
     }
 
-    /** 超时取 5 秒。它应当短于调用方的请求超时，否则请求先被上层掐掉，这里的取消就失去意义。 */
+    public StructuredFanout(Duration timeout) {
+        this(timeout, DEFAULT_CONCURRENCY);
+    }
+
     public StructuredFanout() {
-        this(DEFAULT_TIMEOUT);
+        this(DEFAULT_TIMEOUT, DEFAULT_CONCURRENCY);
     }
 
     @Override
     public <T> List<T> all(List<Callable<T>> tasks) throws Exception {
         try (var scope = StructuredTaskScope.open(Joiner.<T>allSuccessfulOrThrow(),
                 config -> config.withTimeout(timeout))) {
-            tasks.forEach(scope::fork);
+            tasks.forEach(task -> scope.fork(throttled(task)));
             return scope.join().map(Subtask::get).toList();
         }
     }
@@ -67,7 +78,7 @@ public final class StructuredFanout implements Fanout {
                 subtask -> subtask.state() == Subtask.State.SUCCESS && hit.test(subtask.get());
         try (var scope = StructuredTaskScope.open(Joiner.<T>allUntil(stop),
                 config -> config.withTimeout(timeout))) {
-            tasks.forEach(scope::fork);
+            tasks.forEach(task -> scope.fork(throttled(task)));
             var completed = scope.join().toList();
 
             var results = completed.stream()
@@ -86,5 +97,23 @@ public final class StructuredFanout implements Fanout {
             }
             return results;
         }
+    }
+
+    /**
+     * 限流包装。
+     *
+     * <p>虚拟线程廉价，但每个分支背后是一条数据库连接，而递归会让扇出逐层叠加——
+     * 不设并发上限时一次 check 就能把连接池抽干，那时故障面是整个进程而不是这一个请求。
+     * 信号量在任务体内获取而不是 fork 前，好让取消能正常传播到还在排队的任务。
+     */
+    private <T> Callable<T> throttled(Callable<T> task) {
+        return () -> {
+            permits.acquire();
+            try {
+                return task.call();
+            } finally {
+                permits.release();
+            }
+        };
     }
 }

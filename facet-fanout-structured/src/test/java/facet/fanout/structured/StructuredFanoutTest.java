@@ -6,8 +6,10 @@ import facet.core.ir.SubjectRef;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -87,6 +89,38 @@ class StructuredFanoutTest {
     @Test
     void timeoutMustBePositive() {
         assertThrows(IllegalArgumentException.class, () -> new StructuredFanout(Duration.ZERO));
+    }
+
+    @Test
+    void concurrencyMustBePositive() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new StructuredFanout(Duration.ofSeconds(1), 0));
+    }
+
+    /**
+     * 并发上限必须真的封顶。
+     *
+     * <p>虚拟线程廉价，但每个分支背后是一条数据库连接，而递归会让扇出逐层叠加——不封顶时
+     * 一次 check 就能把连接池抽干，那时故障面是整个进程而不是这一个请求。断言的是并发<strong>峰值</strong>：
+     * 只断言"结果都回来了"的话，信号量被误删也一样能通过。
+     */
+    @Test
+    void concurrencyIsCapped() throws Exception {
+        var limited = new StructuredFanout(Duration.ofSeconds(10), 2);
+        var running = new AtomicInteger();
+        var peak = new AtomicInteger();
+        var tasks = new ArrayList<Callable<Integer>>();
+        for (int i = 0; i < 16; i++) {
+            tasks.add(() -> {
+                peak.accumulateAndGet(running.incrementAndGet(), Math::max);
+                Thread.sleep(Duration.ofMillis(20));
+                running.decrementAndGet();
+                return 1;
+            });
+        }
+
+        assertEquals(16, limited.all(tasks).size());
+        assertTrue(peak.get() <= 2, "并发峰值 " + peak.get() + " 超过上限 2");
     }
 
     /**

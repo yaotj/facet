@@ -18,6 +18,7 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -151,9 +152,27 @@ class PdpServerTest {
         assertTrue(response.body().contains("\"nextCursor\":null"), response.body());
     }
 
+    /**
+     * 展开端点：谁能对这个对象做这件事。
+     *
+     * <p>走正向端口，所以不需要反向索引；userset 已经在服务端展开成具体的人——
+     * 权限管理界面要显示的是人，不是 {@code group:eng#member}。
+     */
     @Test
-    void readOnlyDeploymentRefusesWrites() throws IOException {
-        var response = post("/v1/relationships",
+    void lookupSubjectsExpandsToConcretePrincipals() throws IOException {
+        var body = """
+                {"object":{"type":"doc","id":"readme"},"relation":"view"}""";
+
+        var response = post("/v1/lookup-subjects", body, TOKEN);
+
+        assertEquals(200, response.status(), response.body());
+        assertEquals("""
+                {"subjects":[{"type":"user","id":"alice"},{"type":"user","id":"carol"}]}""",
+                response.body());
+    }
+
+    @Test
+    void readOnlyDeploymentRefusesWrites() throws IOException {        var response = post("/v1/relationships",
                 """
                 {"writes":[{"object":{"type":"doc","id":"new"},"relation":"viewer",\
                 "subject":{"type":"user","id":"dave"}}]}""", TOKEN);
@@ -262,7 +281,7 @@ class PdpServerTest {
                 FolderScenario.SCHEMA, tuples, attrs, new MemoryPlanExecutor(tuples, attrs),
                 RelationshipWriter.READ_ONLY, (auth, scope) -> true, 10,
                 PdpServer.Config.DEFAULT_MAX_BODY, false,
-                DecisionCache.NONE, RevisionSource.NONE, Duration.ofSeconds(5)));
+                PdpServer.Extras.NONE.withStaleness(RevisionSource.NONE, Duration.ofSeconds(5))));
     }
 
     /** 有界缓存必须淘汰：键里含请求带来的对象 id，无界就是客户端可控的内存泄漏。 */
@@ -324,11 +343,10 @@ class PdpServerTest {
                 new MemoryPlanExecutor(tuples, attrs), RelationshipWriter.READ_ONLY,
                 (authorization, scope) -> TOKEN.equals(authorization), 10,
                 PdpServer.Config.DEFAULT_MAX_BODY, false,
-                DecisionCache.NONE, RevisionSource.NONE, Duration.ZERO,
-                body -> {
+                PdpServer.Extras.NONE.withSchemaDecoder(body -> {
                     reloaded.set(body);
                     return FolderScenario.SCHEMA;
-                });
+                }));
 
         try (var server = PdpServer.start(config)) {
             var response = post(server.port(), "/v1/schema", "{\"version\":1}", TOKEN);
@@ -342,6 +360,10 @@ class PdpServerTest {
 
     /** 声明支持快照读但忽略坐标的测试替身：让缓存路径可测，不必拉起数据库。 */
     private PdpServer.Config cached(DecisionCache cache) {
+        return cached(cache, AuditSink.NONE);
+    }
+
+    private PdpServer.Config cached(DecisionCache cache, AuditSink audit) {
         var backing = new MemoryTupleSource().write(FolderScenario.TUPLES);
         var attrs = new MemoryAttrSource();
         var snapshotting = new SnapshotIgnoringTuples(backing);
@@ -349,7 +371,30 @@ class PdpServerTest {
                 new MemoryPlanExecutor(backing, attrs), RelationshipWriter.READ_ONLY,
                 (authorization, scope) -> TOKEN.equals(authorization), 10,
                 PdpServer.Config.DEFAULT_MAX_BODY, false,
-                cache, RevisionSource.NONE, Duration.ZERO);
+                PdpServer.Extras.NONE.withCache(cache).withAudit(audit));
+    }
+
+    /**
+     * 每次判定都要留痕，缓存命中的那次也算。
+     *
+     * <p>审计记的是"谁问到了什么答案"，缓存是服务端的实现细节。漏掉命中的那部分，同一串访问
+     * 在审计里会时有时无——而这取决于缓存是否恰好过期，事后根本无法解释。
+     */
+    @Test
+    void auditRecordsEveryDecisionIncludingCacheHits() throws IOException {
+        var records = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        AuditSink audit = (subject, object, relation, allowed, at) ->
+                records.add(object.id() + "#" + relation.name() + "=" + allowed + "@" + at.value());
+
+        try (var server = PdpServer.start(cached(DecisionCache.bounded(8), audit))) {
+            var body = """
+                    {"subject":{"type":"user","id":"alice"},"object":{"type":"doc","id":"deep"},\
+                    "relation":"view","at":1}""";
+            post(server.port(), "/v1/check", body, TOKEN);
+            post(server.port(), "/v1/check", body, TOKEN);
+
+            assertEquals(List.of("deep#view=true@1", "deep#view=true@1"), records);
+        }
     }
 
     private static final class CountingCache implements DecisionCache {
