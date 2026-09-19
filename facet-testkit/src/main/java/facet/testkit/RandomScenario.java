@@ -33,7 +33,8 @@ import java.util.Random;
  *   <li>条件只用 CONTEXT 属性——可反查路径上不允许 EXTERNAL。</li>
  * </ul>
  *
- * <p>一次生成覆盖全部七个 {@code Perm} 算子与全部八个 {@code Plan} 算子。
+ * <p>一次生成覆盖全部七个 {@code Perm} 算子、全部八个 {@code Plan} 算子，
+ * 以及三种主体形态（具体主体、userset、通配）。
  *
  * <p><strong>失败时打印种子</strong>：种子加上这个生成器就是完整的复现条件，
  * 不需要把失败数据序列化出来。
@@ -62,7 +63,8 @@ public final class RandomScenario {
     /**
      * 一次生成的完整场景。
      *
-     * @param subjects 待验证的主体，含一个 userset 主体以覆盖间接授权
+     * @param subjects 待验证的主体：四个具体用户、一个 userset（覆盖间接授权），
+     *                 以及一个没有任何元组的用户（覆盖仅靠通配放行）
      * @param context  请求上下文属性，条件求值要用
      */
     public record Generated(long seed,
@@ -113,10 +115,21 @@ public final class RandomScenario {
                 }
             }
         }
+        // 通配授权。只挂在 viewer 上，刻意不挂 editor：editor 是 Minus 的 base，
+        // 通配流到那里时展开路径是显式拒绝的（见 Expander.difference）。那条规则有专门的
+        // 用例守着，混进随机场景只会把差分测试变成"在比两个适配器抛的异常是否一致"。
+        for (var object : concat(folders, docs)) {
+            if (random.nextInt(8) == 0) {
+                tuples.add(new Tuple(object, VIEWER, new SubjectRef.Wildcard(USER)));
+            }
+        }
 
         var subjects = new ArrayList<SubjectRef>();
         users.forEach(user -> subjects.add(new SubjectRef.Principal(USER, user.id())));
         subjects.add(new SubjectRef.Userset(groups.getFirst(), MEMBER));
+        // 一个没有任何元组的主体：通配是它唯一可能的放行路径。少了它，通配的效果会被
+        // 那些本来就有授权的用户掩盖，差分测试就覆盖不到"仅靠通配放行"这条路。
+        subjects.add(new SubjectRef.Principal(USER, "newcomer"));
 
         return new Generated(seed, schema, List.copyOf(tuples), List.copyOf(subjects),
                 docs, Map.of("mfa", random.nextBoolean()));

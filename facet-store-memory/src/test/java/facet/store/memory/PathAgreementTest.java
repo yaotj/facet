@@ -78,6 +78,38 @@ class PathAgreementTest {
                 "只有 " + nonEmpty + " 个主体拿到了非空结果，生成器可能没在产生有效授权");
     }
 
+    /**
+     * 生成器确实在产生通配授权，而且那条路径确实被走到。
+     *
+     * <p>这一条守的是<strong>断言恒真</strong>这种失效：差分测试里那些"两个适配器的通配结果
+     * 一致"的断言，在生成器不产通配时会变成空对空，一直绿着却什么都没验。前一个用例守的是
+     * "数据不为空"，这一个守的是"通配这种形态不为空"。
+     *
+     * <p>顺带断言仅靠通配放行的路径真的会发生：{@code newcomer} 没有任何元组，
+     * 它拿到 allow 就只能是通配给的。
+     */
+    @Test
+    void generatorProducesWildcardGrantsThatActuallyMatter() {
+        var newcomer = new SubjectRef.Principal(RandomScenario.USER, "newcomer");
+        int seedsWithWildcard = 0;
+        int newcomerAllowed = 0;
+        for (long seed = 0; seed < SEEDS; seed++) {
+            var scenario = RandomScenario.of(seed);
+            if (scenario.tuples().stream()
+                    .anyMatch(tuple -> tuple.subject() instanceof SubjectRef.Wildcard)) {
+                seedsWithWildcard++;
+            }
+            var tuples = new MemoryTupleSource().write(scenario.tuples());
+            var checker = new Checker(scenario.schema(), tuples, new MemoryAttrSource());
+            newcomerAllowed += filterByCheck(scenario, checker, newcomer).size();
+        }
+
+        assertEquals(true, seedsWithWildcard > SEEDS / 4,
+                "只有 " + seedsWithWildcard + " 个种子含通配授权，跨适配器的通配断言可能是空对空");
+        assertEquals(true, newcomerAllowed > 0,
+                "没有任何对象是仅靠通配放行的，这条路径没被真正走到");
+    }
+
     private static List<ObjectRef> filterByCheck(RandomScenario.Generated scenario,
                                                  Checker checker, SubjectRef subject) {
         var request = Ctx.Request.of(subject).withContextAttrs(scenario.context());
