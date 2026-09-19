@@ -21,6 +21,7 @@ import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
+import facet.core.ir.TupleFilter;
 import facet.core.spi.AttrSource;
 import facet.core.spi.Metrics;
 import facet.core.spi.PlanExecutor;
@@ -75,15 +76,18 @@ public final class PdpServer implements AutoCloseable {
                          SchemaDecoder schemaDecoder,
                          AuditSink audit,
                          Metrics metrics,
-                         Duration deadline) {
+                         Duration deadline,
+                         RelationshipAdmin admin) {
 
-        /** 全关。缓存、陈旧读、远程下发 schema、审计、观测、期限都是要显式打开的能力。 */
+        /** 全关。缓存、陈旧读、远程下发 schema、审计、观测、期限、运维接口都是要显式打开的能力。 */
         public static final Extras NONE = new Extras(DecisionCache.NONE, RevisionSource.NONE,
-                Duration.ZERO, SchemaDecoder.DENIED, AuditSink.NONE, Metrics.NOOP, Duration.ZERO);
+                Duration.ZERO, SchemaDecoder.DENIED, AuditSink.NONE, Metrics.NOOP, Duration.ZERO,
+                RelationshipAdmin.DENIED);
 
         public Extras {
             if (cache == null || revisions == null || staleness == null
-                    || schemaDecoder == null || audit == null || metrics == null || deadline == null) {
+                    || schemaDecoder == null || audit == null || metrics == null
+                    || deadline == null || admin == null) {
                 throw new IllegalArgumentException("可选能力用 NONE / DENIED / ZERO 表达关闭，不用 null");
             }
             if (staleness.isNegative()) {
@@ -96,21 +100,21 @@ public final class PdpServer implements AutoCloseable {
 
         /** 只缓存带具体坐标的请求。 */
         public Extras withCache(DecisionCache sink) {
-            return new Extras(sink, revisions, staleness, schemaDecoder, audit, metrics, deadline);
+            return new Extras(sink, revisions, staleness, schemaDecoder, audit, metrics, deadline, admin);
         }
 
         /** 接受有界陈旧，读 HEAD 的请求因此也能进缓存。 */
         public Extras withStaleness(RevisionSource source, Duration window) {
-            return new Extras(cache, source, window, schemaDecoder, audit, metrics, deadline);
+            return new Extras(cache, source, window, schemaDecoder, audit, metrics, deadline, admin);
         }
 
         /** 打开远程下发 schema。 */
         public Extras withSchemaDecoder(SchemaDecoder decoder) {
-            return new Extras(cache, revisions, staleness, decoder, audit, metrics, deadline);
+            return new Extras(cache, revisions, staleness, decoder, audit, metrics, deadline, admin);
         }
 
         public Extras withAudit(AuditSink sink) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, sink, metrics, deadline);
+            return new Extras(cache, revisions, staleness, schemaDecoder, sink, metrics, deadline, admin);
         }
 
         /**
@@ -120,7 +124,7 @@ public final class PdpServer implements AutoCloseable {
          * 每请求一个虚拟线程，一次深层判定会调它几十次。
          */
         public Extras withMetrics(Metrics sink) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, audit, sink, deadline);
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, sink, deadline, admin);
         }
 
         /**
@@ -137,7 +141,19 @@ public final class PdpServer implements AutoCloseable {
          * 所以它是真的上限，不是"检查点之间的近似"。
          */
         public Extras withDeadline(Duration budget) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, budget);
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, budget, admin);
+        }
+
+        /**
+         * 打开关系运维接口：按条件读取与批量撤销。
+         *
+         * <p>默认关闭，因为它和判定端点根本不是同一个影响面。判定端点一次只回答一个问题，
+         * 而<strong>读端点翻页下去能把整张授权图导出去</strong>——它不需要调用方事先知道有哪些
+         * 元组，这恰恰是判定接口天然的限流器；<strong>删端点一次空条件调用就能清空全库</strong>。
+         * 这两件事都应当是部署方明确决定要开的，而不是装上 PDP 就白送。
+         */
+        public Extras withAdmin(RelationshipAdmin port) {
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, deadline, port);
         }
     }
 
@@ -237,6 +253,12 @@ public final class PdpServer implements AutoCloseable {
                 exchange -> handle(exchange, Authenticator.Scope.READ, this::lookupSubjects));
         server.createContext("/v1/relationships",
                 exchange -> handle(exchange, Authenticator.Scope.WRITE, this::write));
+        // jdk.httpserver 按最长前缀派发，这两条更具体的路径会盖过上面的 /v1/relationships；
+        // 读用 READ 能力、删用 WRITE，与其它端点的读写分权保持一致
+        server.createContext("/v1/relationships/read",
+                exchange -> handle(exchange, Authenticator.Scope.READ, this::readRelationships));
+        server.createContext("/v1/relationships/delete",
+                exchange -> handle(exchange, Authenticator.Scope.WRITE, this::deleteRelationships));
         server.createContext("/v1/schema",
                 exchange -> handle(exchange, Authenticator.Scope.WRITE, this::loadSchema));
         server.createContext("/v1/healthz", PdpServer::healthz);
@@ -477,6 +499,46 @@ public final class PdpServer implements AutoCloseable {
     }
 
     /**
+     * 按条件读回元组。
+     *
+     * <p>分页上限与判定端点共用 {@code maxPageSize}：这是运维接口里唯一的成本闸门——
+     * 筛选条件可以一个字段都不钉，"导出全库"必须靠翻页而不是靠一次巨大的响应完成。
+     *
+     * <p>要放进 {@code Ctx} 里跑，是因为适配器（PG）从 {@code Ctx.current().at()} 取坐标来决定
+     * 读哪个版本的时效区间。不给上下文，这个端点在 HEAD 与历史坐标之间就没法选。
+     */
+    private Object readRelationships(HttpExchange exchange, byte[] body) throws IOException {
+        var request = JSON.readValue(body, Wire.ReadRequest.class);
+        int limit = Math.min(
+                request.limit() == null ? config.maxPageSize() : Math.max(request.limit(), 1),
+                config.maxPageSize());
+        var filter = filter(request.filter());
+        var after = request.after() == null ? null : tuple(request.after());
+        // 读元组不针对某个主体，上下文里的 principal 只是占位
+        var placeholder = new SubjectRef.Principal(new ObjectType("_admin"), "_admin");
+
+        var found = Ctx.run(context(placeholder, resolveAt(request.at()), null),
+                () -> config.extras().admin().read(filter, after, limit));
+
+        var tuples = new ArrayList<Wire.TupleJson>(found.size());
+        found.forEach(tuple -> tuples.add(json(tuple)));
+        // 只有取满一页才可能有下一页；游标就是最后一条元组本身，下次原样传回 after
+        var next = found.size() == limit ? json(found.getLast()) : null;
+        return new Wire.ReadResponse(tuples, next);
+    }
+
+    /**
+     * 按条件批量撤销。
+     *
+     * <p>不需要 {@code Ctx}：撤销是写操作，坐标由适配器自己分配，不存在"在哪个版本上删"。
+     */
+    private Object deleteRelationships(HttpExchange exchange, byte[] body) throws IOException {
+        var request = JSON.readValue(body, Wire.DeleteWhereRequest.class);
+        var revision = config.extras().admin().deleteWhere(filter(request.filter()));
+        return new Wire.DeleteWhereResponse(revision.value());
+    }
+
+    /**
      * 远程下发 schema。
      *
      * <p>要 {@code WRITE} 能力：能改 schema 比能改元组的影响面更大——前者改的是授权语义本身。
@@ -601,13 +663,48 @@ public final class PdpServer implements AutoCloseable {
         }
         var out = new ArrayList<Tuple>(wire.size());
         for (var item : wire) {
-            var subject = item.subjectRelation() == null
-                    ? (SubjectRef) new SubjectRef.Principal(
-                            new ObjectType(item.subject().type()), item.subject().id())
-                    : new SubjectRef.Userset(ref(item.subject()), new Rel(item.subjectRelation()));
-            out.add(new Tuple(ref(item.object()), new Rel(item.relation()), subject));
+            out.add(tuple(item));
         }
         return out;
+    }
+
+    private static Tuple tuple(Wire.TupleJson item) {
+        var subject = item.subjectRelation() == null
+                ? (SubjectRef) new SubjectRef.Principal(
+                        new ObjectType(item.subject().type()), item.subject().id())
+                : new SubjectRef.Userset(ref(item.subject()), new Rel(item.subjectRelation()));
+        return new Tuple(ref(item.object()), new Rel(item.relation()), subject);
+    }
+
+    private static Wire.TupleJson json(Tuple tuple) {
+        var object = new Wire.Ref(tuple.object().type().name(), tuple.object().id());
+        return switch (tuple.subject()) {
+            case SubjectRef.Principal(var type, var id) -> new Wire.TupleJson(
+                    object, tuple.relation().name(), new Wire.Ref(type.name(), id), null);
+            case SubjectRef.Userset(var target, var relation) -> new Wire.TupleJson(
+                    object, tuple.relation().name(),
+                    new Wire.Ref(target.type().name(), target.id()), relation.name());
+        };
+    }
+
+    /**
+     * 线格式的筛选条件转内核形状。
+     *
+     * <p>走规范构造器而不是那些工厂方法：工厂方法各自钉住了特定字段（"某个对象上的全部"、
+     * "某个主体的全部"），而线格式允许任意子集，包括只给 {@code type} 不给 {@code id}。
+     * {@code null} 一路保留为"任意"，空白串则会被 {@code TupleFilter} 挡掉——
+     * 那正是我们想要的：把空串当成"任意"是个安静的灾难。
+     */
+    private static TupleFilter filter(Wire.TupleFilterJson wire) {
+        var object = wire.object();
+        var subject = wire.subject();
+        return new TupleFilter(
+                object == null || object.type() == null ? null : new ObjectType(object.type()),
+                object == null ? null : object.id(),
+                wire.relation() == null ? null : new Rel(wire.relation()),
+                subject == null || subject.type() == null ? null : new ObjectType(subject.type()),
+                subject == null ? null : subject.id(),
+                wire.subjectRelation() == null ? null : new Rel(wire.subjectRelation()));
     }
 
     private static SubjectRef subject(Wire.Ref wire) {

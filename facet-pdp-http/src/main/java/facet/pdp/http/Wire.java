@@ -113,6 +113,49 @@ final class Wire {
     /** {@code POST /v1/relationships} 响应体，返回本批变更生效的坐标。 */
     record WriteResponse(long revision) {}
 
+    /**
+     * 筛选条件里的引用。
+     *
+     * <p>不复用 {@link Ref}：那个的规范构造器要求 {@code type} 与 {@code id} 都非空白，
+     * 而筛选条件的核心用法恰恰是只钉住一半（"把 doc 这个类型下的元组全导出来"）。
+     * 复用它等于让"任意 id"这件事根本表达不出来，所以这里单独开一个不做校验的形状，
+     * 至于"是不是约束得太松"由 {@link facet.core.ir.TupleFilter} 那侧去判断。
+     */
+    record FilterRef(String type, String id) {}
+
+    /** 元组筛选条件。字段为 {@code null} 表示"任意"，语义与 {@code TupleFilter} 一致。 */
+    record TupleFilterJson(FilterRef object,
+                           String relation,
+                           FilterRef subject,
+                           String subjectRelation) {}
+
+    /**
+     * {@code POST /v1/relationships/read} 请求体。
+     *
+     * <p>{@code filter} 必填：漏掉它就是"导出全库"，那种意图必须写成显式的空条件对象，
+     * 不能是少传一个字段的后果。
+     */
+    record ReadRequest(TupleFilterJson filter, TupleJson after, Integer limit, Long at) {
+
+        ReadRequest {
+            require(filter, "filter");
+        }
+    }
+
+    /** {@code POST /v1/relationships/read} 响应体。{@code nextCursor} 为 null 表示已到末页。 */
+    record ReadResponse(List<TupleJson> tuples, TupleJson nextCursor) {}
+
+    /** {@code POST /v1/relationships/delete} 请求体。 */
+    record DeleteWhereRequest(TupleFilterJson filter) {
+
+        DeleteWhereRequest {
+            require(filter, "filter");
+        }
+    }
+
+    /** {@code POST /v1/relationships/delete} 响应体，返回本次撤销生效的坐标。 */
+    record DeleteWhereResponse(long revision) {}
+
     /** 统一错误体。 */
     record ErrorResponse(String error, String message) {}
 

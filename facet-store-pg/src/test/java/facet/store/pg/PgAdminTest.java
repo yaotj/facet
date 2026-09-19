@@ -1,0 +1,182 @@
+package facet.store.pg;
+
+import facet.core.eval.Ctx;
+import facet.core.ir.Revision;
+import facet.core.ir.Tuple;
+import facet.core.ir.TupleFilter;
+import facet.store.memory.MemoryTupleSource;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+
+import static facet.testkit.FolderScenario.BANNED;
+import static facet.testkit.FolderScenario.EDITOR;
+import static facet.testkit.FolderScenario.MEMBER;
+import static facet.testkit.FolderScenario.PARENT;
+import static facet.testkit.FolderScenario.TUPLES;
+import static facet.testkit.FolderScenario.doc;
+import static facet.testkit.FolderScenario.folder;
+import static facet.testkit.FolderScenario.group;
+import static facet.testkit.FolderScenario.principal;
+import static facet.testkit.FolderScenario.user;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * 运维侧的按条件读取与批量撤销。
+ *
+ * <p>这两个方法不在求值端口上，因此没有判定矩阵替它们兜着：PG 侧的 {@code WHERE} 是手写的，
+ * 它<strong>必须</strong>与 {@code TupleFilter.matches} 等价，排序也必须与内存适配器同一个序。
+ * 一旦分歧，症状是"同一个游标在两个存储上翻到不同页"——导出会静默丢行，而每一页看着都正常。
+ *
+ * <p>撤销这一侧要钉住的是闭区间语义：{@code revokeWhere} 关区间而不是 DELETE，
+ * 所以历史坐标仍然读得到那些元组。改成删除的话这里全绿、而快照读会在生产上突然少掉一段历史。
+ *
+ * <p>没有 Docker 时整类跳过：真实存储的验证不该成为构建的硬前提。
+ */
+@Testcontainers(disabledWithoutDocker = true)
+class PgAdminTest {
+
+    @Container
+    static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
+
+    private static final Revision WRITTEN = new Revision(1);
+
+    private static Connections connections;
+    private static PgTupleSource pgTuples;
+
+    @BeforeAll
+    static void setUp() {
+        // 直接用 DriverManager 而不是 PGSimpleDataSource：Connections 只要一条连接，
+        // 引入 DataSource 会顺带把 javax.naming 拖进模块图。
+        connections = () -> DriverManager.getConnection(
+                PG.getJdbcUrl(), PG.getUsername(), PG.getPassword());
+        pgTuples = new PgTupleSource(connections);
+        pgTuples.migrate();
+        // 空跑一次 apply 把序列的第一个值用掉。元组写在坐标 1 上，而撤销的坐标由序列分配：
+        // 两者相等时闭区间 [1,1) 是空的，"历史坐标仍可读"这条断言就会因为坐标碰撞而失败，
+        // 看起来像是闭区间没生效。
+        pgTuples.apply(List.of(), List.of());
+    }
+
+    @BeforeEach
+    void reload() {
+        truncate();
+        pgTuples.write(WRITTEN, TUPLES);
+    }
+
+    /** PG 的 WHERE 必须与 {@code TupleFilter.matches} 等价，排序也必须与内存适配器同一个序。 */
+    @Test
+    void readAgreesWithTheMemoryAdapter() {
+        var memTuples = new MemoryTupleSource().write(TUPLES);
+        var request = Ctx.Request.of(principal("alice"));
+
+        for (var filter : List.of(TupleFilter.ANY,
+                TupleFilter.onObject(doc("readme")),
+                TupleFilter.ofSubject(principal("alice")))) {
+            var memory = Ctx.run(request, () -> memTuples.read(filter, null, 1000));
+            var postgres = Ctx.run(request, () -> pgTuples.read(filter, null, 1000));
+            assertEquals(memory, postgres, filter.toString());
+        }
+
+        // 顺序本身也钉一条：六列升序、字节序，所以 banned < editor < parent
+        assertEquals(List.of(
+                        Tuple.of(doc("readme"), BANNED, user("alice")),
+                        Tuple.of(doc("readme"), EDITOR, user("alice")),
+                        Tuple.of(doc("readme"), PARENT, folder("eng"))),
+                read(TupleFilter.onObject(doc("readme")), null, 1000));
+    }
+
+    /** 游标就是上一页最后一条元组：一页一页翻下去必须不重不漏地覆盖整个集合。 */
+    @Test
+    void cursorPaginationWalksTheWholeSetOnPostgres() {
+        var single = read(TupleFilter.ANY, null, 1000);
+
+        var paged = new ArrayList<Tuple>();
+        Tuple after = null;
+        while (true) {
+            var page = read(TupleFilter.ANY, after, 3);
+            if (page.isEmpty()) {
+                break;
+            }
+            paged.addAll(page);
+            after = page.getLast();
+        }
+
+        assertEquals(single, paged);
+        assertEquals(TUPLES.size(), paged.size());
+    }
+
+    /** 撤销是闭区间而不是 DELETE：HEAD 上读不到了，历史坐标仍然读得到。 */
+    @Test
+    void revokeWhereClosesIntervalsWithoutDeleting() {
+        int before = rowCount();
+
+        var revoked = pgTuples.revokeWhere(TupleFilter.onObject(doc("readme")));
+
+        assertTrue(revoked.value() > WRITTEN.value(),
+                "撤销坐标必须大于写入坐标，否则闭区间是空的: " + revoked.value());
+        assertEquals(List.of(), read(TupleFilter.onObject(doc("readme")), null, 1000));
+        assertEquals(3, readAt(WRITTEN, TupleFilter.onObject(doc("readme"))).size(),
+                "坐标 " + WRITTEN.value() + " 上这三条元组当时还有效");
+        assertEquals(before, rowCount(), "撤销不该删行，空间要靠 compact 回收");
+    }
+
+    /** 按主体撤销只清掉直接授权：经 group 拿到权限的人不受影响。 */
+    @Test
+    void revokeWhereBySubjectRemovesDirectGrants() {
+        pgTuples.revokeWhere(TupleFilter.ofSubject(principal("alice")));
+
+        assertEquals(List.of(), read(TupleFilter.ofSubject(principal("alice")), null, 1000));
+        assertEquals(List.of(Tuple.of(group("eng"), MEMBER, user("carol"))),
+                read(TupleFilter.ofSubject(principal("carol")), null, 1000));
+    }
+
+    /** 撤销与写入共用序列，所以坐标严格递增——调用方能拿它做写后一致读。 */
+    @Test
+    void revokeWhereReturnsAMonotonicRevision() {
+        var first = pgTuples.revokeWhere(TupleFilter.onObject(doc("readme")));
+        var second = pgTuples.revokeWhere(TupleFilter.onObject(doc("spec")));
+
+        assertTrue(second.value() > first.value(),
+                first.value() + " → " + second.value());
+    }
+
+    /** 每个 read 都要在 Ctx 里跑：适配器从 {@code Ctx.current().at()} 取时效坐标。 */
+    private static List<Tuple> read(TupleFilter filter, Tuple after, int limit) {
+        return Ctx.run(Ctx.Request.of(principal("alice")),
+                () -> pgTuples.read(filter, after, limit));
+    }
+
+    private static List<Tuple> readAt(Revision at, TupleFilter filter) {
+        return Ctx.run(Ctx.Request.of(principal("alice")).at(at),
+                () -> pgTuples.read(filter, null, 1000));
+    }
+
+    private static int rowCount() {
+        try (var conn = connections.get();
+             var st = conn.createStatement();
+             var rs = st.executeQuery("SELECT count(*) FROM facet_tuple")) {
+            rs.next();
+            return rs.getInt(1);
+        } catch (SQLException e) {
+            throw new IllegalStateException("统计行数失败", e);
+        }
+    }
+
+    private static void truncate() {
+        try (var conn = connections.get(); var st = conn.createStatement()) {
+            st.execute("TRUNCATE facet_tuple");
+        } catch (SQLException e) {
+            throw new IllegalStateException("清库失败", e);
+        }
+    }
+}

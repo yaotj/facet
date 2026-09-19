@@ -6,6 +6,7 @@ import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
+import facet.core.ir.TupleFilter;
 import facet.core.spi.TupleSource;
 
 import java.sql.Connection;
@@ -44,6 +45,8 @@ public final class PgTupleSource implements TupleSource {
 
     /** 单批回收的行数上限。一条 DELETE 删完全部历史会形成超长事务并长时间持锁。 */
     private static final int COMPACT_BATCH = 10_000;
+
+    private static final System.Logger LOG = System.getLogger(PgTupleSource.class.getName());
 
     private final Connections connections;
     private final int maxFanout;
@@ -173,6 +176,167 @@ public final class PgTupleSource implements TupleSource {
     /** 写入指定坐标。仅供导入/回填：并发使用时没有 {@link #apply} 的顺序保证。 */
     public void write(Revision at, Tuple... tuples) {
         write(at, List.of(tuples));
+    }
+
+    // ---- 运维侧：按条件读取与批量撤销 ----
+
+    /** 运维读取时的列顺序，同时也是排序键与游标的比较顺序。 */
+    private static final List<String> KEY_COLUMNS = List.of(
+            "object_type", "object_id", "relation", "subject_type", "subject_id", "subject_rel");
+
+    /**
+     * 按条件读回元组。
+     *
+     * <p>{@code TupleSource} 上那三个读方法都是求值形状的，答不出"这个对象上到底写了什么"。
+     * 迁移、审计导出、离职前的影响面确认都需要这一个，而它<strong>不属于</strong>求值端口：
+     * 把它加到 {@code TupleSource} 上会让每个适配器都得实现一个和判定无关的方法。
+     *
+     * <p>排序按六列升序、{@code COLLATE "C"} 对齐字节序，与内存适配器一致。现有索引没有带
+     * 这个排序规则，所以这条查询会走排序——它是运维路径，不在 check 的热路径上，
+     * 用确定的跨适配器顺序换掉索引是划算的。
+     *
+     * @param after 上一页最后一条元组；首页传 {@code null}。用元组本身而不是编码过的
+     *              游标串：六个字段里任何一个都可能含分隔符，编码就得处理转义
+     * @param limit 单页条数上限
+     */
+    public List<Tuple> read(TupleFilter filter, Tuple after, int limit) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("单页上限必须为正");
+        }
+        var values = new ArrayList<Object>();
+        var sql = new StringBuilder("""
+                SELECT object_type, object_id, relation, subject_type, subject_id, subject_rel
+                  FROM facet_tuple
+                 WHERE rev_from <= ? AND ? < rev_to""");
+        long at = Rows.at();
+        values.add(at);
+        values.add(at);
+        appendFilter(sql, values, filter);
+        if (after != null) {
+            appendAfter(sql, values, after);
+        }
+        sql.append("\n ORDER BY ").append(orderBy()).append("\n LIMIT ?");
+        values.add(limit);
+
+        try (var conn = connections.get(); var ps = Statements.of(conn, sql.toString(), connections)) {
+            bind(ps, values);
+            var out = new ArrayList<Tuple>();
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(new Tuple(
+                            new ObjectRef(new ObjectType(rs.getString(1)), rs.getString(2)),
+                            new Rel(rs.getString(3)),
+                            Rows.toSubject(rs.getString(4), rs.getString(5), rs.getString(6))));
+                }
+            }
+            return List.copyOf(out);
+        } catch (SQLException e) {
+            throw new PgException("按条件读取元组失败", e);
+        }
+    }
+
+    /**
+     * 按条件批量撤销。
+     *
+     * <p>逐条 {@link #revoke} 要求调用方先把元组完整枚举出来，而"删除一个租户"、
+     * "清理一个已删除的资源"、"离职清理"都拿不到那份清单。
+     *
+     * <p>和 {@link #apply} 走同一条路径：事务级顾问锁 + 序列分配坐标。撤销同样是闭区间
+     * 而不是 DELETE，所以历史坐标上的读仍然看得到这些元组——这也意味着它<strong>不释放空间</strong>，
+     * 空间要靠 {@link #compact} 回收。
+     *
+     * <p>{@link TupleFilter#ANY} 是合法输入（清空整个库是真实需求），但会落一条 WARNING 日志：
+     * 一次无约束的撤销如果是某个字段忘填的意外，日志是唯一能事后看出来的痕迹。
+     *
+     * @return 本次撤销生效的坐标
+     */
+    public Revision revokeWhere(TupleFilter filter) {
+        if (filter.unconstrained()) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "收到无约束的批量撤销：将关闭全部仍然有效的元组");
+        }
+        var assigned = new long[1];
+        inTransaction(conn -> {
+            lockWriters(conn, writerLock);
+            assigned[0] = nextRevision(conn);
+            var values = new ArrayList<Object>();
+            var sql = new StringBuilder("UPDATE facet_tuple SET rev_to = ?\n WHERE rev_to = ?");
+            values.add(assigned[0]);
+            values.add(PgSchema.OPEN);
+            appendFilter(sql, values, filter);
+            try (var ps = Statements.of(conn, sql.toString(), connections)) {
+                bind(ps, values);
+                ps.executeUpdate();
+            }
+        }, "按条件撤销元组失败");
+        return new Revision(assigned[0]);
+    }
+
+    /** 把筛选条件编成 WHERE 片段。{@code null} 字段不产生条件，因此天然就是"任意"。 */
+    private static void appendFilter(StringBuilder sql, List<Object> values, TupleFilter filter) {
+        appendEquals(sql, values, "object_type",
+                filter.objectType() == null ? null : filter.objectType().name());
+        appendEquals(sql, values, "object_id", filter.objectId());
+        appendEquals(sql, values, "relation",
+                filter.relation() == null ? null : filter.relation().name());
+        appendEquals(sql, values, "subject_type",
+                filter.subjectType() == null ? null : filter.subjectType().name());
+        appendEquals(sql, values, "subject_id", filter.subjectId());
+        // subjectRel 为 null 是"任意"；要匹配具体主体应当传一个空 Rel 名做不到，
+        // 所以这里的语义是：给了 rel 就只匹配 userset，不给就两者都匹配
+        appendEquals(sql, values, "subject_rel",
+                filter.subjectRel() == null ? null : filter.subjectRel().name());
+    }
+
+    private static void appendEquals(StringBuilder sql, List<Object> values,
+                                     String column, String value) {
+        if (value != null) {
+            sql.append("\n   AND ").append(column).append(" = ?");
+            values.add(value);
+        }
+    }
+
+    /**
+     * 游标条件：按六列的字典序取"大于上一条"的部分。
+     *
+     * <p>写成显式的 OR 链而不是行比较 {@code (a,b,...) > (...)}：行比较用的是默认排序规则，
+     * 而 ORDER BY 用的是 {@code COLLATE "C"}，两者不一致会让某一页被跳过或重复。
+     * 分页的正确性要求比较与排序<strong>必须是同一个序</strong>。
+     */
+    private static void appendAfter(StringBuilder sql, List<Object> values, Tuple after) {
+        var key = keyOf(after);
+        sql.append("\n   AND (");
+        for (int level = 0; level < KEY_COLUMNS.size(); level++) {
+            if (level > 0) {
+                sql.append("\n     OR ");
+            }
+            sql.append('(');
+            for (int prefix = 0; prefix < level; prefix++) {
+                sql.append(KEY_COLUMNS.get(prefix)).append(" COLLATE \"C\" = ? AND ");
+                values.add(key.get(prefix));
+            }
+            sql.append(KEY_COLUMNS.get(level)).append(" COLLATE \"C\" > ?)");
+            values.add(key.get(level));
+        }
+        sql.append(')');
+    }
+
+    private static List<String> keyOf(Tuple tuple) {
+        var subject = Rows.of(tuple.subject());
+        return List.of(tuple.object().type().name(), tuple.object().id(), tuple.relation().name(),
+                subject.type(), subject.id(), subject.rel());
+    }
+
+    private static String orderBy() {
+        return KEY_COLUMNS.stream().map(column -> column + " COLLATE \"C\"")
+                .collect(java.util.stream.Collectors.joining(", "));
+    }
+
+    private static void bind(java.sql.PreparedStatement ps, List<Object> values)
+            throws SQLException {
+        for (int i = 0; i < values.size(); i++) {
+            ps.setObject(i + 1, values.get(i));
+        }
     }
 
     /** 写入指定坐标。仅供导入/回填。 */

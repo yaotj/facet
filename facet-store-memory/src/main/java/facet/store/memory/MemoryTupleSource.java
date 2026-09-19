@@ -1,16 +1,20 @@
 package facet.store.memory;
 
 import facet.core.eval.Ctx;
+import facet.core.eval.Keys;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
 import facet.core.ir.Rel;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
+import facet.core.ir.TupleFilter;
 import facet.core.spi.TupleSource;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -99,6 +103,48 @@ public final class MemoryTupleSource implements TupleSource {
         return reverse.getOrDefault(new Rev(subject, rel), Set.of()).stream()
                 .filter(obj -> obj.type().equals(type))
                 .sorted(java.util.Comparator.comparing(ObjectRef::id, facet.core.eval.Keys.ORDER));
+    }
+
+    /**
+     * 按条件读回元组。
+     *
+     * <p>排序与 PG 适配器对齐：六列升序、字节序（{@code Keys.ORDER} 对应 PG 的
+     * {@code COLLATE "C"}）。顺序必须一致，否则同一个游标在两个存储上会翻到不同页。
+     *
+     * @param after 上一页最后一条元组；首页传 {@code null}
+     */
+    public List<Tuple> read(TupleFilter filter, Tuple after, int limit) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("单页上限必须为正");
+        }
+        requireHead();
+        var all = new ArrayList<Tuple>();
+        forward.forEach((key, subjects) -> subjects.forEach(subject ->
+                all.add(new Tuple(key.object(), key.relation(), subject))));
+        return all.stream()
+                .filter(filter::matches)
+                .sorted(BY_KEY)
+                .filter(tuple -> after == null || BY_KEY.compare(tuple, after) > 0)
+                .limit(limit)
+                .toList();
+    }
+
+    /** 六列字典序，逐列走字节序比较——与 PG 的 {@code ORDER BY ... COLLATE "C"} 是同一个序。 */
+    private static final Comparator<Tuple> BY_KEY = Comparator
+            .comparing((Tuple t) -> t.object().type().name(), Keys.ORDER)
+            .thenComparing(t -> t.object().id(), Keys.ORDER)
+            .thenComparing(t -> t.relation().name(), Keys.ORDER)
+            .thenComparing(t -> subjectKey(t.subject()).get(0), Keys.ORDER)
+            .thenComparing(t -> subjectKey(t.subject()).get(1), Keys.ORDER)
+            .thenComparing(t -> subjectKey(t.subject()).get(2), Keys.ORDER);
+
+    /** 主体的三列表示。空 rel 表示具体主体——与 PG 表里 {@code subject_rel = ''} 的约定一致。 */
+    private static List<String> subjectKey(SubjectRef subject) {
+        return switch (subject) {
+            case SubjectRef.Principal(var type, var id) -> List.of(type.name(), id, "");
+            case SubjectRef.Userset(var object, var relation) ->
+                    List.of(object.type().name(), object.id(), relation.name());
+        };
     }
 
     /**

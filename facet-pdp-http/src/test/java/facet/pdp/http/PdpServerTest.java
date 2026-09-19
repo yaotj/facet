@@ -4,6 +4,8 @@ import facet.core.eval.Ctx;
 import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
+import facet.core.ir.Tuple;
+import facet.core.ir.TupleFilter;
 import facet.core.spi.Metrics;
 import facet.core.spi.TupleSource;
 import facet.store.memory.MemoryAttrSource;
@@ -616,6 +618,93 @@ class PdpServerTest {
                     {"writes":[{"object":{"type":"doc","id":"n"},"relation":"viewer",\
                     "subject":{"type":"user","id":"d"}}]}""", TOKEN).status());
         }
+    }
+
+    /** 读端点能把整套授权关系导出去，删端点一次调用就能清空整个库——两者都必须显式打开。 */
+    @Test
+    void relationshipAdminIsDeniedByDefault() throws IOException {
+        var readResponse = post("/v1/relationships/read",
+                "{\"filter\":{}}", TOKEN);
+        assertEquals(405, readResponse.status(), readResponse.body());
+
+        var deleteResponse = post("/v1/relationships/delete",
+                "{\"filter\":{}}", TOKEN);
+        assertEquals(405, deleteResponse.status(), deleteResponse.body());
+    }
+
+    /** 显式接入运维端口后，按对象筛选能读回对应的元组。 */
+    @Test
+    void relationshipReadReturnsStoredTuples() throws IOException {
+        try (var server = PdpServer.start(
+                admin(2, (authorization, scope) -> TOKEN.equals(authorization)))) {
+            var response = post(server.port(), "/v1/relationships/read",
+                    "{\"filter\":{\"object\":{\"type\":\"doc\",\"id\":\"readme\"}}}", TOKEN);
+
+            assertEquals(200, response.status(), response.body());
+            // 只断言片段而不是整个响应：六列升序意味着 banned 在 editor 之前，
+            // 但这条用例要看的是"筛选条件真的把 doc:readme 的元组取回来了"
+            assertTrue(response.body().contains("\"relation\":\"banned\""), response.body());
+            assertTrue(response.body().contains("\"relation\":\"editor\""), response.body());
+            assertTrue(response.body().contains("{\"type\":\"user\",\"id\":\"alice\"}"),
+                    response.body());
+        }
+    }
+
+    /** 删端点走 WRITE 能力：只有 READ 权限的凭据能读元组，但不能按条件撤销。 */
+    @Test
+    void relationshipDeleteRequiresWriteScope() throws IOException {
+        var readOnlyToken = admin(10, (authorization, scope) -> TOKEN.equals(authorization)
+                && scope == Authenticator.Scope.READ);
+
+        try (var server = PdpServer.start(readOnlyToken)) {
+            assertEquals(200, post(server.port(), "/v1/relationships/read",
+                    "{\"filter\":{}}", TOKEN).status());
+            assertEquals(401, post(server.port(), "/v1/relationships/delete",
+                    "{\"filter\":{}}", TOKEN).status());
+        }
+    }
+
+    /** 客户端要 1000 条也只给服务端的一页上限，和反查同一个规矩；满页时给出游标。 */
+    @Test
+    void relationshipReadIsPagedByServer() throws IOException {
+        try (var server = PdpServer.start(
+                admin(2, (authorization, scope) -> TOKEN.equals(authorization)))) {
+            var response = post(server.port(), "/v1/relationships/read",
+                    "{\"filter\":{},\"limit\":1000}", TOKEN);
+
+            assertEquals(200, response.status(), response.body());
+            // 游标本身也是一条元组，所以只数 tuples 数组那一段
+            var page = response.body().substring(0, response.body().indexOf("\"nextCursor\""));
+            assertEquals(2, countOccurrences(page, "\"relation\":"), response.body());
+            assertFalse(response.body().contains("\"nextCursor\":null"), response.body());
+        }
+    }
+
+    /**
+     * 装上运维端口的服务器。
+     *
+     * <p>读接到内存适配器上，撤销一律抛 {@code UnsupportedOperationException}——那不是偷懒，
+     * 内存适配器只有一个版本，真的没有撤销能力。
+     */
+    private PdpServer.Config admin(int maxPage, Authenticator authenticator) {
+        var tuples = new MemoryTupleSource().write(FolderScenario.TUPLES);
+        var attrs = new MemoryAttrSource();
+        var port = new RelationshipAdmin() {
+
+            @Override
+            public List<Tuple> read(TupleFilter filter, Tuple after, int limit) {
+                return tuples.read(filter, after, limit);
+            }
+
+            @Override
+            public Revision deleteWhere(TupleFilter filter) {
+                throw new UnsupportedOperationException("内存适配器没有撤销能力");
+            }
+        };
+        return new PdpServer.Config(0, FolderScenario.SCHEMA, tuples, attrs,
+                new MemoryPlanExecutor(tuples, attrs), RelationshipWriter.READ_ONLY,
+                authenticator, maxPage, PdpServer.Config.DEFAULT_MAX_BODY, false,
+                PdpServer.Extras.NONE.withAdmin(port));
     }
 
     /** 畸形 JSON 必须拿到 400，而不是空响应——Jackson 的异常是 IOException 子类，很容易漏接。 */
