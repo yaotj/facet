@@ -53,7 +53,25 @@ public record TupleFilter(ObjectType objectType,
                     new TupleFilter(null, null, null, type, id, null);
             case SubjectRef.Userset(var object, var relation) ->
                     new TupleFilter(null, null, null, object.type(), object.id(), relation);
+            case SubjectRef.Wildcard(var type) -> wildcardsOf(type);
         };
+    }
+
+    /**
+     * 只匹配某个类型的<strong>通配</strong>授权，不含该类型下任何具体主体的授权。
+     *
+     * <p>这个方法必须存在，而且必须与 {@link #ofObjectType} 之类的"整个类型"区分开：
+     * 它的典型用途是下线一条公开资源策略，而那条命令会流进 {@code revokeWhere}。
+     * 如果"找出 user 的通配授权"实际产出的是"主体类型是 user 的全部元组"，
+     * 一次按文档调用就会把该类型下所有人的授权全撤掉——而 {@link #unconstrained()}
+     * 还会返回 {@code false}，运维日志里连个警告都没有。
+     *
+     * <p>实现上借用 {@link SubjectRef#WILDCARD_ID} 做筛选层的标记。它是安全的：
+     * {@code Principal} 的构造器拒绝这个 id，所以 {@code "*"} 在这里不可能指向某个真实主体。
+     * 各适配器负责把它翻译成自己的存储编码（PG 与内存都是空串）。
+     */
+    public static TupleFilter wildcardsOf(ObjectType type) {
+        return new TupleFilter(null, null, null, type, SubjectRef.WILDCARD_ID, null);
     }
 
     /** 某个类型的全部元组。下线一个对象类型用这个。 */
@@ -85,14 +103,19 @@ public record TupleFilter(ObjectType objectType,
         var type = switch (subject) {
             case SubjectRef.Principal(var t, _) -> t;
             case SubjectRef.Userset(var object, _) -> object.type();
+            case SubjectRef.Wildcard(var t) -> t;
         };
+        // 通配在筛选层用 "*" 表示，与线上格式一致；它不可能撞上真实主体，
+        // 因为 Principal 的构造器拒绝这个 id。适配器负责翻译成自己的存储编码
         var id = switch (subject) {
             case SubjectRef.Principal(_, var i) -> i;
             case SubjectRef.Userset(var object, _) -> object.id();
+            case SubjectRef.Wildcard _ -> SubjectRef.WILDCARD_ID;
         };
-        // Principal 没有 subjectRel；要求匹配某个 rel 时它一律不符合
+        // Principal 与 Wildcard 都没有 subjectRel；要求匹配某个 rel 时它们一律不符合
         var rel = switch (subject) {
             case SubjectRef.Principal _ -> null;
+            case SubjectRef.Wildcard _ -> null;
             case SubjectRef.Userset(_, var r) -> r;
         };
         if (subjectType != null && !subjectType.equals(type)) {

@@ -104,8 +104,16 @@ final class Wire {
         }
     }
 
-    /** {@code POST /v1/lookup-subjects} 响应体，已展开到具体主体并按确定顺序排列。 */
-    record LookupSubjectsResponse(List<Ref> subjects, String nextCursor) {}
+    /**
+     * {@code POST /v1/lookup-subjects} 响应体。
+     *
+     * <p>{@code subjects} 是已展开到具体主体的一页，按确定顺序排列。
+     *
+     * <p>{@code anyOf} 是被授予了通配的主体类型（{@code user:*} 那种）。它<strong>不参与
+     * 分页</strong>，每页都完整给出——通配代表一个开放集合，展不成具体主体，而把它省掉会让
+     * "谁能看这份文档"漏掉"所有人"。客户端必须把这一列也显示出来，否则权限界面会撒谎。
+     */
+    record LookupSubjectsResponse(List<Ref> subjects, List<String> anyOf, String nextCursor) {}
 
     /** {@code POST /v1/relationships} 请求体。 */
     record WriteRequest(List<TupleJson> writes, List<TupleJson> deletes) {}

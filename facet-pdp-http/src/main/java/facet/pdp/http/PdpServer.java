@@ -479,17 +479,22 @@ public final class PdpServer implements AutoCloseable {
         var cursor = request.cursor() == null ? Cursor.START : new Cursor(request.cursor());
         var object = ref(request.object());
         var relation = new Rel(request.relation());
-        // 展开不针对某个主体，上下文里的 principal 只是占位
-        var placeholder = new SubjectRef.Principal(object.type(), object.id());
+        // 展开不针对某个主体，上下文里的 principal 只是占位。用固定 id 而不是对象的 id：
+        // 后者若恰好是 "*"，Principal 的构造器会拒绝，端点就会把一次正常查询报成 400
+        var placeholder = new SubjectRef.Principal(object.type(), "facet-expander");
 
         var found = Ctx.run(context(placeholder, resolveAt(request.at()), request.context()),
                 () -> policy.expander().subjects(object, relation, cursor, limit));
 
-        var subjects = new ArrayList<Wire.Ref>(found.size());
-        found.forEach(subject -> subjects.add(new Wire.Ref(subject.type().name(), subject.id())));
+        var principals = found.principals();
+        var subjects = new ArrayList<Wire.Ref>(principals.size());
+        principals.forEach(subject -> subjects.add(new Wire.Ref(subject.type().name(), subject.id())));
+        // 通配主体展不开，单独一列报出来。静默忽略它会让"谁能看这份文档"漏掉"所有人"——
+        // 对审计来说，低估访问面是最危险的方向
+        var anyOf = found.anyOf().stream().map(ObjectType::name).toList();
         // 只有取满一页才可能有下一页；不足一页就不给游标，省掉客户端一次空请求
-        var next = found.size() == limit ? Cursor.keyOf(found.getLast()) : null;
-        return new Wire.LookupSubjectsResponse(subjects, next);
+        var next = principals.size() == limit ? Cursor.keyOf(principals.getLast()) : null;
+        return new Wire.LookupSubjectsResponse(subjects, anyOf, next);
     }
 
     private Object write(HttpExchange exchange, byte[] body) throws IOException {
@@ -669,10 +674,16 @@ public final class PdpServer implements AutoCloseable {
     }
 
     private static Tuple tuple(Wire.TupleJson item) {
-        var subject = item.subjectRelation() == null
-                ? (SubjectRef) new SubjectRef.Principal(
-                        new ObjectType(item.subject().type()), item.subject().id())
-                : new SubjectRef.Userset(ref(item.subject()), new Rel(item.subjectRelation()));
+        SubjectRef subject;
+        if (SubjectRef.WILDCARD_ID.equals(item.subject().id())) {
+            // user:* → Wildcard(user)
+            subject = new SubjectRef.Wildcard(new ObjectType(item.subject().type()));
+        } else if (item.subjectRelation() == null) {
+            subject = new SubjectRef.Principal(
+                    new ObjectType(item.subject().type()), item.subject().id());
+        } else {
+            subject = new SubjectRef.Userset(ref(item.subject()), new Rel(item.subjectRelation()));
+        }
         return new Tuple(ref(item.object()), new Rel(item.relation()), subject);
     }
 
@@ -684,6 +695,9 @@ public final class PdpServer implements AutoCloseable {
             case SubjectRef.Userset(var target, var relation) -> new Wire.TupleJson(
                     object, tuple.relation().name(),
                     new Wire.Ref(target.type().name(), target.id()), relation.name());
+            case SubjectRef.Wildcard(var type) -> new Wire.TupleJson(
+                    object, tuple.relation().name(),
+                    new Wire.Ref(type.name(), SubjectRef.WILDCARD_ID), null);
         };
     }
 

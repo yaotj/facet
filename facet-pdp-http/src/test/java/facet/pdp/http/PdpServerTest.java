@@ -187,7 +187,7 @@ class PdpServerTest {
 
         assertEquals(200, first.status(), first.body());
         assertEquals("""
-                {"subjects":[{"type":"user","id":"alice"}],"nextCursor":"user:alice"}""",
+                {"subjects":[{"type":"user","id":"alice"}],"anyOf":[],"nextCursor":"user:alice"}""",
                 first.body());
 
         var second = post("/v1/lookup-subjects", """
@@ -195,7 +195,7 @@ class PdpServerTest {
                 "cursor":"user:alice"}""", TOKEN);
 
         assertEquals("""
-                {"subjects":[{"type":"user","id":"carol"}],"nextCursor":"user:carol"}""",
+                {"subjects":[{"type":"user","id":"carol"}],"anyOf":[],"nextCursor":"user:carol"}""",
                 second.body());
 
         // 走到末尾：不足一页就不给游标，省掉客户端一次空请求
@@ -203,7 +203,43 @@ class PdpServerTest {
                 {"object":{"type":"doc","id":"readme"},"relation":"view","limit":1,\
                 "cursor":"user:carol"}""", TOKEN);
 
-        assertEquals("{\"subjects\":[],\"nextCursor\":null}", third.body());
+        assertEquals("{\"subjects\":[],\"anyOf\":[],\"nextCursor\":null}", third.body());
+    }
+
+    /**
+     * 通配主体单独一列报出来，不混进已展开的具体主体里。
+     *
+     * <p>{@code anyOf} 是这个端点上唯一一个<strong>不参与分页</strong>的字段：它代表一个开放
+     * 集合（"所有 user"），落不成具体的人。把它省掉，权限界面就会在"谁能看这份文档"上少报
+     * 最要紧的那一行；把它塞进 {@code subjects} 则等于要求服务端把整张用户表读出来——
+     * 而那恰恰是通配主体要避免的写放大。
+     */
+    @Test
+    void lookupSubjectsReportsWildcardInAnyOf() throws IOException {
+        try (var server = PdpServer.start(withWildcardGrant())) {
+            var response = post(server.port(), "/v1/lookup-subjects", """
+                    {"object":{"type":"doc","id":"public"},"relation":"view"}""", TOKEN);
+
+            assertEquals(200, response.status(), response.body());
+            assertEquals("{\"subjects\":[],\"anyOf\":[\"user\"],\"nextCursor\":null}",
+                    response.body());
+        }
+    }
+
+    /**
+     * 装了一条通配授权的服务器。
+     *
+     * <p>不加进共享 fixture：好几个用例断言的是<strong>整个</strong>响应体，多一条授权就会
+     * 把它们变成噪声失败。
+     */
+    private PdpServer.Config withWildcardGrant() {
+        var tuples = new MemoryTupleSource().write(FolderScenario.TUPLES)
+                .write(new Tuple(FolderScenario.doc("public"), FolderScenario.VIEWER,
+                        new SubjectRef.Wildcard(FolderScenario.USER)));
+        var attrs = new MemoryAttrSource();
+        return new PdpServer.Config(0, FolderScenario.SCHEMA, tuples, attrs,
+                new MemoryPlanExecutor(tuples, attrs), RelationshipWriter.READ_ONLY,
+                (authorization, scope) -> TOKEN.equals(authorization), 10, false);
     }
 
     /** 客户端要 1000 条也只给服务端的一页上限，和反查同一个规矩。 */

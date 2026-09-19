@@ -100,21 +100,25 @@ class PgDifferentialTest {
             var memExpander = new Expander(scenario.schema(), memTuples, memAttrs);
             var pgExpander = new Expander(scenario.schema(), pgTuples, pgAttrs);
             for (var object : scenario.docs()) {
-                assertEquals(
-                        expand(scenario, memExpander, object),
-                        expand(scenario, pgExpander, object),
+                var memoryFound = expand(scenario, memExpander, object);
+                var pgFound = expand(scenario, pgExpander, object);
+                // 两部分分开比：principals 用 List 比而不是 Set，因为返回顺序也是端口契约；
+                // anyOf 是通配主体类型，它在两个适配器里的编码不同（内存是 Wildcard，
+                // PG 是 subject_id = ''），不单独比一遍这层转换就没有断言看着
+                assertEquals(List.copyOf(memoryFound.principals()), List.copyOf(pgFound.principals()),
                         "展开结果在 seed=" + seed + " object=" + object + " 上分歧");
+                assertEquals(List.copyOf(memoryFound.anyOf()), List.copyOf(pgFound.anyOf()),
+                        "通配主体类型在 seed=" + seed + " object=" + object + " 上分歧");
             }
         }
     }
 
     /** 展开不针对某个主体，上下文里的 principal 只是占位。 */
-    private static List<SubjectRef.Principal> expand(RandomScenario.Generated scenario,
-                                                     Expander expander, ObjectRef object) {
+    private static Expander.Subjects expand(RandomScenario.Generated scenario,
+                                            Expander expander, ObjectRef object) {
         var request = Ctx.Request.of(scenario.subjects().getFirst())
                 .withContextAttrs(scenario.context());
-        return List.copyOf(
-                Ctx.run(request, () -> expander.subjects(object, RandomScenario.VIEW, Cursor.START, 10000)));
+        return Ctx.run(request, () -> expander.subjects(object, RandomScenario.VIEW, Cursor.START, 10000));
     }
 
     private static List<ObjectRef> lookupAll(RandomScenario.Generated scenario, SubjectRef subject,

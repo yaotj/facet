@@ -7,7 +7,19 @@ import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 
-/** 主体在表里的三列表示，以及一致性坐标到 bigint 的映射。读写两侧都走这里，避免各写一份。 */
+/**
+ * 主体在表里的三列表示，以及一致性坐标到 bigint 的映射。读写两侧都走这里，避免各写一份。
+ *
+ * <p>三列上有两个哨兵值，各自不可能与真实数据碰撞：
+ * <ul>
+ *   <li>{@code rel = ''} 表示主体不是 userset。{@code Rel} 名不会是空串。</li>
+ *   <li>{@code id = ''} 表示通配主体（{@code user:*}）。{@code Principal} 与 {@code ObjectRef}
+ *       的构造器都拒绝空白 id，所以这个值在表里本来就到不了。</li>
+ * </ul>
+ *
+ * <p>存储用 {@code ''} 而线上格式用 {@code *}，是刻意的分工：前者要的是不可能碰撞，
+ * 后者要的是人能读。转换只在这一个类里发生。
+ */
 final class Rows {
 
     private Rows() {
@@ -21,10 +33,15 @@ final class Rows {
             case SubjectRef.Principal(var type, var id) -> new Subject(type.name(), id, "");
             case SubjectRef.Userset(var object, var relation) ->
                     new Subject(object.type().name(), object.id(), relation.name());
+            // 空 id 是通配的编码：它排在同类型全部具体主体之前，跨适配器的顺序因此也确定
+            case SubjectRef.Wildcard(var type) -> new Subject(type.name(), "", "");
         };
     }
 
     static SubjectRef toSubject(String type, String id, String rel) {
+        if (id.isEmpty()) {
+            return new SubjectRef.Wildcard(new ObjectType(type));
+        }
         return rel.isEmpty()
                 ? new SubjectRef.Principal(new ObjectType(type), id)
                 : new SubjectRef.Userset(new ObjectRef(new ObjectType(type), id), new Rel(rel));

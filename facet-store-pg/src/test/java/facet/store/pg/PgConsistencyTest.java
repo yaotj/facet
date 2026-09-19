@@ -26,7 +26,9 @@ import static facet.testkit.FolderScenario.EDIT;
 import static facet.testkit.FolderScenario.PARENT;
 import static facet.testkit.FolderScenario.SCHEMA;
 import static facet.testkit.FolderScenario.TUPLES;
+import static facet.testkit.FolderScenario.USER;
 import static facet.testkit.FolderScenario.VIEW;
+import static facet.testkit.FolderScenario.VIEWER;
 import static facet.testkit.FolderScenario.VIEW_MFA;
 import static facet.testkit.FolderScenario.doc;
 import static facet.testkit.FolderScenario.folder;
@@ -51,6 +53,18 @@ class PgConsistencyTest {
     static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
 
     private static final Revision WRITTEN = new Revision(1);
+
+    /**
+     * 公开文档的通配授权，以及它的开/关坐标。
+     *
+     * <p>不写进共享 fixture：类内执行顺序不保证，而它会让反查多出一个对象，把那几条
+     * "两个适配器结果逐字符相同"的断言变成偶发失败。用例里现写现撤，是为了让这份数据的
+     * 影响面刚好等于用到它的那两个用例。
+     */
+    private static final Revision OPENED = new Revision(20);
+    private static final Revision CLOSED = new Revision(21);
+    private static final Tuple PUBLIC_VIEW =
+            new Tuple(doc("public"), VIEWER, new SubjectRef.Wildcard(USER));
 
     private static PgTupleSource pgTuples;
     private static PgAttrSource pgAttrs;
@@ -164,5 +178,50 @@ class PgConsistencyTest {
 
         // 复原，避免影响其他用例（JUnit 默认类内顺序不保证，因此这里立刻回滚）
         pgTuples.write(new Revision(10), link);
+    }
+
+    /**
+     * 通配主体在表里的编码能原样读回来。
+     *
+     * <p>{@code subject_id = ''} 这个哨兵值省掉了一列和一次迁移，代价是写入与读取必须在
+     * 同一处转换上对齐。这条断言钉的就是那次往返：错一边的症状是 {@code user:*} 被读成
+     * {@code Principal(user, "")}——一个构造器本来就拒绝的形状，而它会一路飘到判定里。
+     */
+    @Test
+    void wildcardRoundTripsThroughTheTable() {
+        pgTuples.write(OPENED, PUBLIC_VIEW);
+        try {
+            var found = Ctx.run(Ctx.Request.of(principal("alice")),
+                    () -> pgTuples.subjects(doc("public"), VIEWER));
+
+            assertEquals(List.of(new SubjectRef.Wildcard(USER)), List.copyOf(found));
+        } finally {
+            pgTuples.revoke(CLOSED, PUBLIC_VIEW);
+        }
+    }
+
+    /**
+     * 通配授权在真实 SQL 上对 check 与反查同时生效。
+     *
+     * <p>反查那一侧是这条用例的重点：它靠主体闭包里多播的一行
+     * {@code SELECT ?::text, '', ''} 起作用，而那行只有在真正的递归 CTE 里执行过才算被验证。
+     * 少了它的症状最难查——check 说"你能看"，列表接口里这份文档却根本不出现。
+     */
+    @Test
+    void wildcardGrantIsVisibleToBothCheckAndReverseLookup() {
+        pgTuples.write(OPENED, PUBLIC_VIEW);
+        try {
+            // newcomer 在库里一条元组都没有：公开资源不该要求先为他写入什么
+            var request = Ctx.Request.of(principal("newcomer"));
+
+            assertTrue(Ctx.run(request,
+                    () -> new Checker(SCHEMA, pgTuples, pgAttrs).check(doc("public"), VIEW)).allowed());
+
+            var plan = new Planner(SCHEMA, pgTuples.caps()).plan(DOC, VIEW, Cursor.START, 10);
+            assertEquals(List.of(doc("public")),
+                    Ctx.run(request, () -> pgExecutor.execute(plan).toList()));
+        } finally {
+            pgTuples.revoke(CLOSED, PUBLIC_VIEW);
+        }
     }
 }

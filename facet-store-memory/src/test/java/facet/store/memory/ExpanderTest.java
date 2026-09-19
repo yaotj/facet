@@ -97,7 +97,7 @@ class ExpanderTest {
         var expanding = new Expander(SCHEMA, cyclic, attrs);
 
         assertTrue(Ctx.run(Ctx.Request.of(principal("dave")),
-                () -> expanding.subjects(folder("a"), VIEW, Cursor.START, 100)).isEmpty());
+                () -> expanding.subjects(folder("a"), VIEW, Cursor.START, 100)).principals().isEmpty());
     }
 
     /** 展开的成本和扇出一样会失控，所以用同一个上限硬拒绝。 */
@@ -131,7 +131,7 @@ class ExpanderTest {
         while (true) {
             var page = cursor;
             var found = List.copyOf(
-                    Ctx.run(request, () -> expander.subjects(doc("readme"), VIEW, page, 1)));
+                    Ctx.run(request, () -> expander.subjects(doc("readme"), VIEW, page, 1)).principals());
             if (found.isEmpty()) {
                 break;
             }
@@ -181,6 +181,7 @@ class ExpanderTest {
     private List<SubjectRef.Principal> subjects(ObjectRef object, Rel relation,
                                                 Map<String, Object> context) {
         var request = Ctx.Request.of(principal("placeholder")).withContextAttrs(context);
-        return List.copyOf(Ctx.run(request, () -> expander.subjects(object, relation, Cursor.START, 100)));
+        return List.copyOf(
+                Ctx.run(request, () -> expander.subjects(object, relation, Cursor.START, 100)).principals());
     }
 }

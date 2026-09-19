@@ -77,6 +77,7 @@ public final class MatrixDiff {
             case SubjectRef.Principal(var type, var id) -> type.name() + ':' + id;
             case SubjectRef.Userset(var object, var relation) ->
                     object.type().name() + ':' + object.id() + '#' + relation.name();
+            case SubjectRef.Wildcard(var type) -> type.name() + ':' + SubjectRef.WILDCARD_ID;
         };
     }
 }

@@ -166,7 +166,10 @@ public final class Checker {
 
     private Decision direct(Rel rel, ObjectRef obj, Trail trail) throws Exception {
         var subjects = tuples.subjects(obj, rel);
-        if (subjects.contains(Ctx.current().principal())) {
+        var principal = Ctx.current().principal();
+        // 通配授权只多一次集合查找，不多一次往返：check 是针对具体主体求值的，
+        // user:* 命中与 user:alice 命中在这里是同一件事
+        if (subjects.contains(principal) || subjects.contains(wildcardFor(principal))) {
             return Decision.allow(new Explain.Hit(rel, obj));
         }
 
@@ -246,6 +249,20 @@ public final class Checker {
     }
 
     /** {@code Caps.maxFanout} 是硬上限：宁可拒绝，也不要一个查询把存储打穿。 */
+    /**
+     * 主体对应的通配形态。
+     *
+     * <p>{@code Userset} 主体没有通配形态——{@code group:eng#member} 本身就是一个集合，
+     * 再对它通配没有意义；只有具体主体才会问"这个类型是不是被整体授权了"。
+     */
+    private static SubjectRef wildcardFor(SubjectRef principal) {
+        return switch (principal) {
+            case SubjectRef.Principal(var type, _) -> new SubjectRef.Wildcard(type);
+            case SubjectRef.Userset(var object, _) -> new SubjectRef.Wildcard(object.type());
+            case SubjectRef.Wildcard wildcard -> wildcard;
+        };
+    }
+
     private void guardFanout(int width, String where) {
         // 先上报再判上限：撞上限之前的增长趋势才是能用来预警的信号
         Ctx.current().metrics().fanout(where, width);

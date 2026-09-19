@@ -78,6 +78,9 @@ public final class DecisionMatrix {
                     Cursor.keyOf(new ObjectRef(type, id));
             case SubjectRef.Userset(var object, var relation) ->
                     Cursor.keyOf(object) + '#' + relation.name();
+            // 不能走 Cursor.keyOf：ObjectRef 拒绝空白 id，而通配在存储里的 id 位就是空串。
+            // 这里要的是人读的形式，所以用线上格式的星号
+            case SubjectRef.Wildcard(var type) -> type.name() + ':' + SubjectRef.WILDCARD_ID;
         };
     }
 }

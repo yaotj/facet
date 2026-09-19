@@ -136,6 +136,64 @@ class TupleFilterTest {
                         () -> tuples.read(TupleFilter.ANY, null, 0)));
     }
 
+    /**
+     * 通配筛选只命中通配授权，不碰该类型下任何具体主体的授权。
+     *
+     * <p>这是那个 bug 的回归测试。它不是"少返回几条"的问题：这个条件会流进
+     * {@code revokeWhere}，匹配多了就是"下线一条公开策略"变成"撤销该类型下所有人的授权"。
+     * 而 {@link TupleFilter#unconstrained()} 在这种条件上返回 {@code false}，
+     * 运维日志里连个警告都不会有——事后只能靠对账发现。
+     */
+    @Test
+    void wildcardFilterDoesNotMatchConcreteGrants() {
+        var wildcard = new Tuple(doc("public"), VIEWER, new SubjectRef.Wildcard(USER));
+        var concrete = Tuple.of(doc("public"), VIEWER, user("dave"));
+        var source = new MemoryTupleSource().write(TUPLES).write(wildcard, concrete);
+
+        assertEquals(List.of(wildcard), read(source, TupleFilter.wildcardsOf(USER)));
+    }
+
+    /** {@code ofSubject(Wildcard)} 委派给 {@code wildcardsOf}，两者必须给出同一个结果。 */
+    @Test
+    void ofSubjectWithWildcardIsPreciseToo() {
+        var wildcard = new Tuple(doc("public"), VIEWER, new SubjectRef.Wildcard(USER));
+        var concrete = Tuple.of(doc("public"), VIEWER, user("dave"));
+        var source = new MemoryTupleSource().write(TUPLES).write(wildcard, concrete);
+
+        assertEquals(TupleFilter.wildcardsOf(USER),
+                TupleFilter.ofSubject(new SubjectRef.Wildcard(USER)));
+        assertEquals(List.of(wildcard),
+                read(source, TupleFilter.ofSubject(new SubjectRef.Wildcard(USER))));
+    }
+
+    /** 反过来也要成立：按具体主体清理不该把公开策略一起带走。 */
+    @Test
+    void concreteSubjectFilterDoesNotMatchTheWildcard() {
+        var wildcard = new Tuple(doc("public"), VIEWER, new SubjectRef.Wildcard(USER));
+        var concrete = Tuple.of(doc("public"), VIEWER, user("dave"));
+        var source = new MemoryTupleSource().write(TUPLES).write(wildcard, concrete);
+
+        assertEquals(List.of(concrete), read(source, TupleFilter.ofSubject(principal("dave"))));
+    }
+
+    /**
+     * {@code "*"} 是筛选层的通配标记，{@code matches} 把它钉死在通配主体上。
+     *
+     * <p>借用这个 id 是安全的：{@code Principal} 的构造器拒绝它，所以它不可能撞上真实主体。
+     * 各适配器再把它翻译成自己的存储编码（PG 与内存都是空串）。
+     */
+    @Test
+    void matchesTreatsWildcardIdAsTheMarker() {
+        var wildcard = new Tuple(doc("public"), VIEWER, new SubjectRef.Wildcard(USER));
+        var concrete = Tuple.of(doc("public"), VIEWER, user("dave"));
+
+        assertTrue(TupleFilter.wildcardsOf(USER).matches(wildcard));
+        assertFalse(TupleFilter.wildcardsOf(USER).matches(concrete));
+        assertEquals(SubjectRef.WILDCARD_ID, TupleFilter.wildcardsOf(USER).subjectId());
+        assertThrows(IllegalArgumentException.class,
+                () -> new SubjectRef.Principal(USER, SubjectRef.WILDCARD_ID));
+    }
+
     /** {@code matches} 是筛选语义的单一定义：PG 侧的 WHERE 必须与它等价。 */
     @Test
     void matchesIsTheSingleDefinitionOfTheFilter() {
@@ -151,7 +209,18 @@ class TupleFilterTest {
     }
 
     private List<Tuple> read(TupleFilter filter) {
+        return read(tuples, filter);
+    }
+
+    /**
+     * 在指定的存储上读。
+     *
+     * <p>通配那几条用局部存储而不是加进类级 fixture：{@code anyMatchesEverything} 与
+     * {@code filterByObjectReturnsEveryRelationOnIt} 断言的是精确条数与精确清单，
+     * 往共享 fixture 里加一条元组会把它们一起弄红。
+     */
+    private static List<Tuple> read(MemoryTupleSource source, TupleFilter filter) {
         return Ctx.run(Ctx.Request.of(principal("admin")),
-                () -> tuples.read(filter, null, 1000));
+                () -> source.read(filter, null, 1000));
     }
 }

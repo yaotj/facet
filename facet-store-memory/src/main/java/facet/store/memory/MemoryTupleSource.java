@@ -138,12 +138,18 @@ public final class MemoryTupleSource implements TupleSource {
             .thenComparing(t -> subjectKey(t.subject()).get(1), Keys.ORDER)
             .thenComparing(t -> subjectKey(t.subject()).get(2), Keys.ORDER);
 
-    /** 主体的三列表示。空 rel 表示具体主体——与 PG 表里 {@code subject_rel = ''} 的约定一致。 */
+    /**
+     * 主体的三列表示。
+     *
+     * <p>空 rel 表示具体主体、空 id 表示通配主体——与 PG 表里的两个哨兵值一致，
+     * 排序因此跨适配器相同。
+     */
     private static List<String> subjectKey(SubjectRef subject) {
         return switch (subject) {
             case SubjectRef.Principal(var type, var id) -> List.of(type.name(), id, "");
             case SubjectRef.Userset(var object, var relation) ->
                     List.of(object.type().name(), object.id(), relation.name());
+            case SubjectRef.Wildcard(var type) -> List.of(type.name(), "", "");
         };
     }
 
@@ -155,11 +161,16 @@ public final class MemoryTupleSource implements TupleSource {
      *
      * <p>返回值保留插入顺序（{@code Set.copyOf} 会把它打散成 JVM 随机序），
      * 因为 {@code ScanReverse} 依此顺序累积结果。
+     *
+     * <p>闭包里还播下一颗通配种子（{@code user:*}）：通配授权在反查里只是闭包多出来的一行，
+     * 与 PG 侧那条 {@code SELECT ?::text, '', ''} 等价。反查问的是"这个<em>具体</em>主体能碰
+     * 哪些"，所以通配在这条路上不构成开放集合。
      */
     public Set<SubjectRef> subjectClosure(SubjectRef principal) {
         var seen = new LinkedHashSet<SubjectRef>();
         var frontier = new ArrayDeque<SubjectRef>();
         frontier.add(principal);
+        frontier.add(new SubjectRef.Wildcard(new ObjectType(subjectKey(principal).getFirst())));
         while (!frontier.isEmpty()) {
             var current = frontier.poll();
             if (seen.add(current)) {

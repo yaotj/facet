@@ -281,7 +281,9 @@ public final class PgTupleSource implements TupleSource {
                 filter.relation() == null ? null : filter.relation().name());
         appendEquals(sql, values, "subject_type",
                 filter.subjectType() == null ? null : filter.subjectType().name());
-        appendEquals(sql, values, "subject_id", filter.subjectId());
+        // 筛选层用 "*" 表示通配，表里的编码是空串——翻译只在这一处发生
+        appendEquals(sql, values, "subject_id",
+                SubjectRef.WILDCARD_ID.equals(filter.subjectId()) ? "" : filter.subjectId());
         // subjectRel 为 null 是"任意"；要匹配具体主体应当传一个空 Rel 名做不到，
         // 所以这里的语义是：给了 rel 就只匹配 userset，不给就两者都匹配
         appendEquals(sql, values, "subject_rel",

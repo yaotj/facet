@@ -30,8 +30,12 @@ public final class PlanSqlCompiler {
      * 把整棵计划编译成一条 SQL。主体、坐标与分页值都编成 {@link Param} 标记，SQL 文本因此只与
      * 计划形状有关，可以按形状缓存并跨请求复用。
      *
-     * <p>参数入列顺序必须与占位符在 SQL 文本里出现的顺序逐一对应，所以主体闭包的五个参数
+     * <p>参数入列顺序必须与占位符在 SQL 文本里出现的顺序逐一对应，所以主体闭包的六个参数
      * 先入列，再编译 body。
+     *
+     * <p>闭包有两个种子：主体自己，以及主体类型的通配（{@code user:*}）。通配因此只是闭包里
+     * 多出来的一行，{@code ScanReverse} 的连接、{@code Difference}、分页全都不用改——
+     * 反查问的是"这个<em>具体</em>主体能碰哪些"，通配在这条路上不构成开放集合。
      */
     public static SqlQuery compile(Plan plan) {
         var emit = new Emit();
@@ -39,6 +43,8 @@ public final class PlanSqlCompiler {
         emit.params.add(new Param.PrincipalType());
         emit.params.add(new Param.PrincipalId());
         emit.params.add(new Param.PrincipalRel());
+        // 通配种子只需要类型：user:* 在表里的 id 与 rel 都是空串
+        emit.params.add(new Param.PrincipalType());
         emit.params.add(new Param.At());
         emit.params.add(new Param.At());
 
@@ -46,6 +52,8 @@ public final class PlanSqlCompiler {
         var sql = """
                 WITH RECURSIVE facet_subject(stype, sid, srel) AS (
                   SELECT ?::text, ?::text, ?::text
+                  UNION
+                  SELECT ?::text, '', ''
                   UNION
                   SELECT t.object_type, t.object_id, t.relation
                     FROM facet_tuple t

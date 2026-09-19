@@ -1,6 +1,8 @@
 WITH RECURSIVE facet_subject(stype, sid, srel) AS (
   SELECT ?::text, ?::text, ?::text
   UNION
+  SELECT ?::text, '', ''
+  UNION
   SELECT t.object_type, t.object_id, t.relation
     FROM facet_tuple t
     JOIN facet_subject s

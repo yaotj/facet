@@ -2,6 +2,7 @@ package facet.store.pg;
 
 import facet.core.eval.Ctx;
 import facet.core.ir.Revision;
+import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
 import facet.core.ir.TupleFilter;
 import facet.store.memory.MemoryTupleSource;
@@ -22,6 +23,8 @@ import static facet.testkit.FolderScenario.EDITOR;
 import static facet.testkit.FolderScenario.MEMBER;
 import static facet.testkit.FolderScenario.PARENT;
 import static facet.testkit.FolderScenario.TUPLES;
+import static facet.testkit.FolderScenario.USER;
+import static facet.testkit.FolderScenario.VIEWER;
 import static facet.testkit.FolderScenario.doc;
 import static facet.testkit.FolderScenario.folder;
 import static facet.testkit.FolderScenario.group;
@@ -49,6 +52,18 @@ class PgAdminTest {
     static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:17-alpine");
 
     private static final Revision WRITTEN = new Revision(1);
+
+    /**
+     * 公开资源策略：{@code doc:public#viewer@user:*}。表里的 {@code subject_id} 是空串。
+     *
+     * <p>不放进 {@code FolderScenario.TUPLES}：那份 fixture 被多处按精确条数断言，
+     * 而这两条元组只服务于通配筛选的精确性。清理靠 {@code @BeforeEach} 的 TRUNCATE。
+     */
+    private static final Tuple WILDCARD_GRANT =
+            new Tuple(doc("public"), VIEWER, new SubjectRef.Wildcard(USER));
+
+    /** 同一个对象、同一个关系上的具体授权——通配撤销不该碰它。 */
+    private static final Tuple CONCRETE_GRANT = Tuple.of(doc("public"), VIEWER, user("dave"));
 
     private static Connections connections;
     private static PgTupleSource pgTuples;
@@ -150,6 +165,49 @@ class PgAdminTest {
                 first.value() + " → " + second.value());
     }
 
+    /**
+     * 通配筛选在 PG 上同样必须精确。
+     *
+     * <p>这一条钉的是 {@code appendFilter} 里那处 {@code "*"} → {@code ''} 的翻译：
+     * 筛选层用 {@code "*"} 做通配标记，表里的编码却是空串。不翻译，SQL 会去找
+     * {@code subject_id = '*'} 而一行也匹配不到（假阴性，看起来像"这条公开策略不存在"）；
+     * 翻译错成"不带这个条件"，就退化成"主体类型是 user 的全部元组"。
+     */
+    @Test
+    void wildcardFilterIsPreciseOnPostgres() {
+        pgTuples.write(WRITTEN, WILDCARD_GRANT, CONCRETE_GRANT);
+
+        assertEquals(List.of(WILDCARD_GRANT), read(TupleFilter.wildcardsOf(USER), null, 100));
+    }
+
+    /**
+     * 按通配撤销只关掉通配那一条，具体主体的授权留在 HEAD 上。
+     *
+     * <p>这是那个 bug 真正会造成损失的地方：{@code POST /v1/relationships/delete} 带上
+     * "下线 user 的通配授权"这一个条件，如果它实际匹配的是"主体类型是 user 的全部元组"，
+     * 一次按文档的调用就把该类型下所有人的授权全撤了，而且 {@code unconstrained()} 是
+     * {@code false}，日志里没有任何警告。
+     * <p>存活情况用裸 SQL 数，不经 {@code read}：撤销与读走的是同一个 {@code appendFilter}，
+     * 用同一条筛选去验证会在"两边一起坏掉"时自证清白（撤销没匹配到、读也没匹配到，断言照样绿）。
+     */
+    @Test
+    void revokeWhereOnWildcardsSparesConcreteGrants() {
+        pgTuples.write(WRITTEN, WILDCARD_GRANT, CONCRETE_GRANT);
+
+        pgTuples.revokeWhere(TupleFilter.wildcardsOf(USER));
+
+        assertEquals(0, openRowsWithSubjectId(""), "通配授权应当已在 HEAD 上失效");
+        assertEquals(1, openRowsWithSubjectId("dave"), "具体主体的授权不该被通配撤销带走");
+        assertEquals(List.of(CONCRETE_GRANT),
+                read(TupleFilter.ofSubject(principal("dave")), null, 100));
+        // 场景数据里的其它直接授权同样不受影响
+        assertEquals(List.of(Tuple.of(group("eng"), MEMBER, user("carol"))),
+                read(TupleFilter.ofSubject(principal("carol")), null, 100));
+        // 撤销仍然是闭区间：历史坐标上那条通配授权还在
+        assertEquals(List.of(WILDCARD_GRANT, CONCRETE_GRANT),
+                readAt(WRITTEN, TupleFilter.onObject(doc("public"))));
+    }
+
     /** 每个 read 都要在 Ctx 里跑：适配器从 {@code Ctx.current().at()} 取时效坐标。 */
     private static List<Tuple> read(TupleFilter filter, Tuple after, int limit) {
         return Ctx.run(Ctx.Request.of(principal("alice")),
@@ -169,6 +227,21 @@ class PgAdminTest {
             return rs.getInt(1);
         } catch (SQLException e) {
             throw new IllegalStateException("统计行数失败", e);
+        }
+    }
+
+    /** HEAD 上某个 {@code subject_id} 的存活行数。通配在表里的编码是空串。 */
+    private static int openRowsWithSubjectId(String subjectId) {
+        var sql = "SELECT count(*) FROM facet_tuple WHERE subject_id = ? AND rev_to = ?";
+        try (var conn = connections.get(); var ps = conn.prepareStatement(sql)) {
+            ps.setString(1, subjectId);
+            ps.setLong(2, PgSchema.OPEN);
+            try (var rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("统计存活行失败", e);
         }
     }
 
