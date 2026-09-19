@@ -1,5 +1,6 @@
 package facet.core.eval;
 
+import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Perm;
 import facet.core.ir.Rel;
@@ -7,6 +8,7 @@ import facet.core.ir.SubjectRef;
 import facet.core.spi.AttrSource;
 import facet.core.spi.TupleSource;
 
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.SequencedSet;
@@ -46,16 +48,35 @@ public final class Expander {
     }
 
     /**
-     * 能对 {@code obj} 做 {@code rel} 的全部具体主体。
+     * 能对 {@code obj} 做 {@code rel} 的具体主体，取一页。
      *
-     * @return 按 {@link SubjectRef#ORDER} 排序，保证跨适配器结果可比对
+     * <p><strong>必须给上限，和反查一样。</strong>结果集大小由数据决定而不由请求决定：一份挂在
+     * 大目录下的文档，"谁能看"可能是三个人也可能是三万人。没有上限，一次审计查询就能拉出一个
+     * 几十兆的响应。
+     *
+     * <p><strong>但这个上限只约束响应，不约束工作量。</strong>这一点和反查不同，必须讲清楚：
+     * 反查能把 {@code LIMIT} 下推进 SQL，展开是沿 {@code Perm} 正向走的，必须先把集合算完
+     * 才能排序取页。约束工作量的是另外三样——每步扇出上限、{@code maxNodes} 工作预算、
+     * 以及可选的墙钟期限。想少做工作就得收窄 schema 或改用反查，而不是把 limit 调小。
+     *
+     * @param after 上一页最后一个主体的游标；首页传 {@link Cursor#START}
+     * @param limit 单页主体数上限
+     * @return 按排序键升序的一页，跨页稳定
      */
-    public SequencedSet<SubjectRef.Principal> subjects(ObjectRef obj, Rel rel) {
+    public SequencedSet<SubjectRef.Principal> subjects(ObjectRef obj, Rel rel,
+                                                      Cursor after, int limit) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("单页上限必须为正");
+        }
         var request = Ctx.current();
         var found = expand(schema.relation(obj.type(), rel).rewrite(), obj,
                 Trail.root(request.maxNodes(), request.deadline()));
+        // 排序与游标比较都走 Cursor.keyOf + Keys：两者必须是同一个序，否则分页会漏项或重项。
+        // 用字节序而不是 SubjectRef.ORDER 的 UTF-16 序，是为了和 PG 的 COLLATE "C" 对齐。
         return found.stream()
-                .sorted(SubjectRef.ORDER)
+                .sorted(Comparator.comparing(Cursor::keyOf, Keys.ORDER))
+                .filter(subject -> Keys.compare(Cursor.keyOf(subject), after.token()) > 0)
+                .limit(limit)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 

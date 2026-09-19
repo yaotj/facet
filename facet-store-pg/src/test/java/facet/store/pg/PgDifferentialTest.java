@@ -114,7 +114,7 @@ class PgDifferentialTest {
         var request = Ctx.Request.of(scenario.subjects().getFirst())
                 .withContextAttrs(scenario.context());
         return List.copyOf(
-                Ctx.run(request, () -> expander.subjects(object, RandomScenario.VIEW)));
+                Ctx.run(request, () -> expander.subjects(object, RandomScenario.VIEW, Cursor.START, 10000)));
     }
 
     private static List<ObjectRef> lookupAll(RandomScenario.Generated scenario, SubjectRef subject,

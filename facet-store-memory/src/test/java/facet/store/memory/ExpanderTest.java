@@ -4,6 +4,7 @@ import facet.core.eval.Checker;
 import facet.core.eval.Ctx;
 import facet.core.eval.EvalException;
 import facet.core.eval.Expander;
+import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Rel;
 import facet.core.ir.SubjectRef;
@@ -96,7 +97,7 @@ class ExpanderTest {
         var expanding = new Expander(SCHEMA, cyclic, attrs);
 
         assertTrue(Ctx.run(Ctx.Request.of(principal("dave")),
-                () -> expanding.subjects(folder("a"), VIEW)).isEmpty());
+                () -> expanding.subjects(folder("a"), VIEW, Cursor.START, 100)).isEmpty());
     }
 
     /** 展开的成本和扇出一样会失控，所以用同一个上限硬拒绝。 */
@@ -108,12 +109,45 @@ class ExpanderTest {
         var expanding = new Expander(SCHEMA, wide, attrs);
 
         assertThrows(EvalException.class, () -> Ctx.run(Ctx.Request.of(principal("dave")),
-                () -> expanding.subjects(doc("wide"), VIEW)));
+                () -> expanding.subjects(doc("wide"), VIEW, Cursor.START, 100)));
     }
 
     @Test
     void expansionOutsideScopedValueFails() {
-        assertThrows(IllegalStateException.class, () -> expander.subjects(doc("readme"), VIEW));
+        assertThrows(IllegalStateException.class, () -> expander.subjects(doc("readme"), VIEW, Cursor.START, 100));
+    }
+
+    /**
+     * 游标分页走完整个结果集，不漏不重。
+     *
+     * <p>排序与游标比较必须是<strong>同一个序</strong>——排序用 UTF-16、游标比较用字节序的话，
+     * 含非 BMP 字符的 id 会让某一页被跳过或重复。这里一次取一个，逐页走到空。
+     */
+    @Test
+    void cursorPaginationWalksTheWholeSet() {
+        var request = Ctx.Request.of(principal("placeholder"));
+        var walked = new java.util.ArrayList<SubjectRef.Principal>();
+        var cursor = Cursor.START;
+        while (true) {
+            var page = cursor;
+            var found = List.copyOf(
+                    Ctx.run(request, () -> expander.subjects(doc("readme"), VIEW, page, 1)));
+            if (found.isEmpty()) {
+                break;
+            }
+            walked.addAll(found);
+            cursor = Cursor.of(found.getLast());
+        }
+
+        assertEquals(List.of(principal("alice"), principal("carol")), walked);
+    }
+
+    /** 没有上限就不给答案：结果集大小由数据决定，一次审计查询不该能拉出几十兆响应。 */
+    @Test
+    void limitMustBePositive() {
+        assertThrows(IllegalArgumentException.class,
+                () -> Ctx.run(Ctx.Request.of(principal("placeholder")),
+                        () -> expander.subjects(doc("readme"), VIEW, Cursor.START, 0)));
     }
 
     /**
@@ -122,8 +156,7 @@ class ExpanderTest {
      * <p>四个主体 × 四个对象 × 三个关系，条件关系再乘两种上下文。
      */
     @Test
-    void expansionAgreesWithCheck() {
-        var candidates = List.of(principal("alice"), principal("bob"),
+    void expansionAgreesWithCheck() {        var candidates = List.of(principal("alice"), principal("bob"),
                 principal("carol"), principal("dave"));
 
         for (var context : List.of(Map.<String, Object>of(), Map.<String, Object>of("mfa", "true"))) {
@@ -148,6 +181,6 @@ class ExpanderTest {
     private List<SubjectRef.Principal> subjects(ObjectRef object, Rel relation,
                                                 Map<String, Object> context) {
         var request = Ctx.Request.of(principal("placeholder")).withContextAttrs(context);
-        return List.copyOf(Ctx.run(request, () -> expander.subjects(object, relation)));
+        return List.copyOf(Ctx.run(request, () -> expander.subjects(object, relation, Cursor.START, 100)));
     }
 }

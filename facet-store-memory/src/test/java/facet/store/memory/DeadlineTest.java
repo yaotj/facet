@@ -5,6 +5,7 @@ import facet.core.eval.Ctx;
 import facet.core.eval.Deadline;
 import facet.core.eval.DeadlineExceededException;
 import facet.core.eval.Expander;
+import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
 import facet.core.ir.Rel;
@@ -102,7 +103,7 @@ class DeadlineTest {
         Thread.sleep(5);
 
         assertThrows(DeadlineExceededException.class,
-                () -> Ctx.run(request, () -> expander.subjects(doc("readme"), VIEW)));
+                () -> Ctx.run(request, () -> expander.subjects(doc("readme"), VIEW, Cursor.START, 100)));
     }
 
     /**

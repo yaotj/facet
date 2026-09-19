@@ -444,20 +444,30 @@ public final class PdpServer implements AutoCloseable {
      *
      * <p>与反查方向相反，走的是正向端口，因此不需要反向索引。语义是"在给定上下文下"——
      * 条件里的 CONTEXT 属性来自请求，所以审计想问"如果没过 MFA 呢"，换个上下文再问一次即可。
+     *
+     * <p>分页上限与反查用同一个 {@code maxPageSize}：结果集大小由数据决定，一份挂在大目录下的
+     * 文档"谁能看"可能是三万人。<strong>但要注意这个上限只约束响应，不约束工作量</strong>——
+     * 展开必须先把集合算完才能取页，真正兜住成本的是工作预算与期限。
      */
     private Object lookupSubjects(HttpExchange exchange, byte[] body) throws IOException {
         var request = JSON.readValue(body, Wire.LookupSubjectsRequest.class);
+        int limit = Math.min(
+                request.limit() == null ? config.maxPageSize() : Math.max(request.limit(), 1),
+                config.maxPageSize());
+        var cursor = request.cursor() == null ? Cursor.START : new Cursor(request.cursor());
         var object = ref(request.object());
         var relation = new Rel(request.relation());
         // 展开不针对某个主体，上下文里的 principal 只是占位
         var placeholder = new SubjectRef.Principal(object.type(), object.id());
 
         var found = Ctx.run(context(placeholder, resolveAt(request.at()), request.context()),
-                () -> policy.expander().subjects(object, relation));
+                () -> policy.expander().subjects(object, relation, cursor, limit));
 
         var subjects = new ArrayList<Wire.Ref>(found.size());
         found.forEach(subject -> subjects.add(new Wire.Ref(subject.type().name(), subject.id())));
-        return new Wire.LookupSubjectsResponse(subjects);
+        // 只有取满一页才可能有下一页；不足一页就不给游标，省掉客户端一次空请求
+        var next = found.size() == limit ? Cursor.keyOf(found.getLast()) : null;
+        return new Wire.LookupSubjectsResponse(subjects, next);
     }
 
     private Object write(HttpExchange exchange, byte[] body) throws IOException {

@@ -94,7 +94,9 @@ final class Wire {
     record LookupSubjectsRequest(Ref object,
                                  String relation,
                                  Long at,
-                                 Map<String, Object> context) {
+                                 Map<String, Object> context,
+                                 Integer limit,
+                                 String cursor) {
 
         LookupSubjectsRequest {
             require(object, "object");
@@ -103,7 +105,7 @@ final class Wire {
     }
 
     /** {@code POST /v1/lookup-subjects} 响应体，已展开到具体主体并按确定顺序排列。 */
-    record LookupSubjectsResponse(List<Ref> subjects) {}
+    record LookupSubjectsResponse(List<Ref> subjects, String nextCursor) {}
 
     /** {@code POST /v1/relationships} 请求体。 */
     record WriteRequest(List<TupleJson> writes, List<TupleJson> deletes) {}

@@ -167,9 +167,52 @@ class PdpServerTest {
         var response = post("/v1/lookup-subjects", body, TOKEN);
 
         assertEquals(200, response.status(), response.body());
+        assertTrue(response.body().contains("{\"type\":\"user\",\"id\":\"alice\"}"), response.body());
+        assertTrue(response.body().contains("{\"type\":\"user\",\"id\":\"carol\"}"), response.body());
+    }
+
+    /**
+     * 展开也要分页。
+     *
+     * <p>结果集大小由数据决定：一份挂在大目录下的文档"谁能看"可能是三万人。这个端点此前
+     * 没有任何上限，一次审计查询就能拉出一个几十兆的响应——而反查那条路早就要求必须给上限，
+     * 两条路的规矩必须一致。
+     */
+    @Test
+    void lookupSubjectsIsPaged() throws IOException {
+        var first = post("/v1/lookup-subjects", """
+                {"object":{"type":"doc","id":"readme"},"relation":"view","limit":1}""", TOKEN);
+
+        assertEquals(200, first.status(), first.body());
         assertEquals("""
-                {"subjects":[{"type":"user","id":"alice"},{"type":"user","id":"carol"}]}""",
-                response.body());
+                {"subjects":[{"type":"user","id":"alice"}],"nextCursor":"user:alice"}""",
+                first.body());
+
+        var second = post("/v1/lookup-subjects", """
+                {"object":{"type":"doc","id":"readme"},"relation":"view","limit":1,\
+                "cursor":"user:alice"}""", TOKEN);
+
+        assertEquals("""
+                {"subjects":[{"type":"user","id":"carol"}],"nextCursor":"user:carol"}""",
+                second.body());
+
+        // 走到末尾：不足一页就不给游标，省掉客户端一次空请求
+        var third = post("/v1/lookup-subjects", """
+                {"object":{"type":"doc","id":"readme"},"relation":"view","limit":1,\
+                "cursor":"user:carol"}""", TOKEN);
+
+        assertEquals("{\"subjects\":[],\"nextCursor\":null}", third.body());
+    }
+
+    /** 客户端要 1000 条也只给服务端的一页上限，和反查同一个规矩。 */
+    @Test
+    void lookupSubjectsPageSizeIsCappedByServer() throws IOException {
+        var response = post("/v1/lookup-subjects", """
+                {"object":{"type":"doc","id":"readme"},"relation":"view","limit":1000}""", TOKEN);
+
+        assertEquals(200, response.status(), response.body());
+        // 共享测试服务器的 maxPageSize 是 2，两个主体刚好取满
+        assertEquals(2, countOccurrences(response.body(), "\"type\":\"user\""), response.body());
     }
 
     @Test
