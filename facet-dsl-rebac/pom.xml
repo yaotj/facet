@@ -22,6 +22,12 @@
             <artifactId>facet-testkit</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- README 的五分钟示例是一个可执行的用例，它需要一个真实存储 -->
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-store-memory</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
