@@ -4,7 +4,9 @@ import facet.core.eval.Ctx;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
+import facet.core.ir.TupleChange;
 import facet.core.ir.TupleFilter;
+import facet.core.spi.HistoryTruncatedException;
 import facet.store.memory.MemoryTupleSource;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +33,7 @@ import static facet.testkit.FolderScenario.group;
 import static facet.testkit.FolderScenario.principal;
 import static facet.testkit.FolderScenario.user;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -42,6 +45,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>撤销这一侧要钉住的是闭区间语义：{@code revokeWhere} 关区间而不是 DELETE，
  * 所以历史坐标仍然读得到那些元组。改成删除的话这里全绿、而快照读会在生产上突然少掉一段历史。
+ *
+ * <p>变更流也在这里：它读的是同一张表的 {@code rev_from} / {@code rev_to}，所以正确性同样落在
+ * 手写 SQL 上。要钉住的是两件事——撤销那一支不能漏（漏了客户端只看到"又多了谁"），
+ * 以及回收之后必须明确拒绝过早的起点而不是给一份缺了撤销的清单。
  *
  * <p>没有 Docker 时整类跳过：真实存储的验证不该成为构建的硬前提。
  */
@@ -208,6 +215,74 @@ class PgAdminTest {
                 readAt(WRITTEN, TupleFilter.onObject(doc("public"))));
     }
 
+    /**
+     * 变更流要如实报出写入与撤销，包括各自生效的坐标。
+     *
+     * <p>撤销那一条是重点：它在表里不是一行新纪录，而是同一行的 {@code rev_to} 被改掉。
+     * 变更流少了这一支的话，客户端只会看到"又多了谁"，永远看不到"谁被收回了"——
+     * 而缓存据此更新的方向恰好是越来越松。
+     */
+    @Test
+    void changesReportsCreationsAndRevocations() {
+        var grant = Tuple.of(doc("public"), VIEWER, user("dave"));
+        var other = Tuple.of(doc("public"), VIEWER, user("erin"));
+        // 起点取当前水位：坐标由全局序列分配，不能在测试里写死
+        var from = pgTuples.head();
+
+        var granted = pgTuples.apply(List.of(grant, other), List.of());
+        var revoked = pgTuples.apply(List.of(), List.of(grant));
+
+        var page = pgTuples.changes(from, Revision.HEAD, 100);
+
+        assertEquals(List.of(
+                        new TupleChange(grant, true, granted),
+                        new TupleChange(other, true, granted),
+                        new TupleChange(grant, false, revoked)),
+                page.changes());
+        assertTrue(page.complete(), "已经追到 HEAD，不该要求客户端立刻再拉一次");
+    }
+
+    /**
+     * 回收之后，一个落后太多的起点必须被明确拒绝。
+     *
+     * <p>这是变更流<strong>正确性</strong>的那一条：{@code compact} 真的删掉了已关闭的行，
+     * 而那些行是"某条授权在某个坐标被撤销了"的唯一记录。此时若照常返回，客户端拿到的是一份
+     * 缺了撤销的清单，它会把已经收回的权限继续留在缓存里放行——没有任何报错。
+     */
+    @Test
+    void changesRejectsAStartBeforeTheWatermark() {
+        var revoked = pgTuples.revokeWhere(TupleFilter.onObject(doc("readme")));
+
+        pgTuples.compact(revoked);
+
+        var failure = assertThrows(HistoryTruncatedException.class,
+                () -> pgTuples.changes(new Revision(0), Revision.HEAD, 100));
+        assertEquals(revoked.value(), failure.earliest().value(),
+                "水位必须是回收的那个坐标，客户端据它判断落后了多少");
+    }
+
+    /**
+     * 一个坐标不能被切成两批。
+     *
+     * <p>一次 {@code apply} 是原子的，半个坐标的变更是一份"改了一半"的集合——缓存照它更新会
+     * 短暂地既不是旧状态也不是新状态。所以 {@code limit} 装不下单个坐标时，{@code page(...)}
+     * 选择直接拒绝并要求调大 limit，而不是悄悄切开：后者只在大批量写入时才出现，
+     * 症状是权限短暂错乱，事后完全无从追查。
+     */
+    @Test
+    void changesNeverSplitsARevision() {
+        var from = pgTuples.head();
+        pgTuples.apply(List.of(
+                Tuple.of(doc("public"), VIEWER, user("dave")),
+                Tuple.of(doc("public"), VIEWER, user("erin")),
+                Tuple.of(doc("public"), VIEWER, user("frank"))), List.of());
+
+        var failure = assertThrows(IllegalArgumentException.class,
+                () -> pgTuples.changes(from, Revision.HEAD, 2));
+
+        assertTrue(failure.getMessage().contains("调大 limit"), failure.getMessage());
+    }
+
     /** 每个 read 都要在 Ctx 里跑：适配器从 {@code Ctx.current().at()} 取时效坐标。 */
     private static List<Tuple> read(TupleFilter filter, Tuple after, int limit) {
         return Ctx.run(Ctx.Request.of(principal("alice")),
@@ -245,9 +320,17 @@ class PgAdminTest {
         }
     }
 
+    /**
+     * 清库。
+     *
+     * <p>回收水位要一起清回 0：它不在 {@code facet_tuple} 里，只 TRUNCATE 元组表的话，
+     * 某个用例调过 {@code compact} 之后水位就永久抬高了，而变更流那几条用例会随执行顺序
+     * 时绿时红——那种失败最难认，因为单独跑每一条都是绿的。
+     */
     private static void truncate() {
         try (var conn = connections.get(); var st = conn.createStatement()) {
             st.execute("TRUNCATE facet_tuple");
+            st.execute("UPDATE facet_watermark SET value = 0");
         } catch (SQLException e) {
             throw new IllegalStateException("清库失败", e);
         }

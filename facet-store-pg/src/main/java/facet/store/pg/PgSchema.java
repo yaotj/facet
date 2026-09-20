@@ -17,6 +17,7 @@ public final class PgSchema {
 
     public static final String TUPLES = "facet_tuple";
     public static final String ATTRS = "facet_attr";
+    public static final String WATERMARK = "facet_watermark";
 
     /** 开区间上界，代表"当前仍有效"。 */
     public static final long OPEN = Long.MAX_VALUE;
@@ -53,6 +54,15 @@ public final class PgSchema {
                   ON facet_tuple (subject_type, subject_id, subject_rel, relation, object_type)""",
                 // 坐标由序列分配。序列不参与事务回滚，所以坐标会有空洞——单调足够，连续不必要
                 "CREATE SEQUENCE IF NOT EXISTS facet_revision AS bigint START 1",
+                // 历史回收水位。单行表，存"变更流最早还能覆盖到哪个坐标"。
+                // 没有它，回收之后变更流会安静地少报撤销，而客户端缓存据此更新的结果是
+                // 已经收回的权限继续放行——一个不会有任何报错的权限泄漏
+                """
+                CREATE TABLE IF NOT EXISTS facet_watermark (
+                  only_row boolean PRIMARY KEY DEFAULT true CHECK (only_row),
+                  value    bigint  NOT NULL DEFAULT 0
+                )""",
+                "INSERT INTO facet_watermark (only_row, value) VALUES (true, 0) ON CONFLICT DO NOTHING",
                 """
                 CREATE TABLE IF NOT EXISTS facet_attr (
                   object_type text NOT NULL,

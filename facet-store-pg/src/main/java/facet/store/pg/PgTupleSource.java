@@ -6,7 +6,9 @@ import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
+import facet.core.ir.TupleChange;
 import facet.core.ir.TupleFilter;
+import facet.core.spi.HistoryTruncatedException;
 import facet.core.spi.TupleSource;
 
 import java.sql.Connection;
@@ -151,15 +153,22 @@ public final class PgTupleSource implements TupleSource {
         try (var conn = connections.get()) {
             boolean autoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
-            try (var ps = Statements.of(conn, sql, connections)) {
-                while (true) {
-                    ps.setLong(1, watermark.value());
-                    ps.setInt(2, COMPACT_BATCH);
-                    int deleted = ps.executeUpdate();
-                    conn.commit();
-                    total += deleted;
-                    if (deleted < COMPACT_BATCH) {
-                        return total;
+            try {
+                // 水位<strong>先</strong>抬、再删：中途失败时水位声明的历史比实际拥有的少，
+                // 变更流会拒绝一个本来还能服务的客户端。反过来写才是危险的——那会让它给出
+                // 一份缺了撤销的清单，而客户端据此更新缓存的结果是已收回的权限继续放行
+                advanceWatermark(conn, watermark.value());
+                conn.commit();
+                try (var ps = Statements.of(conn, sql, connections)) {
+                    while (true) {
+                        ps.setLong(1, watermark.value());
+                        ps.setInt(2, COMPACT_BATCH);
+                        int deleted = ps.executeUpdate();
+                        conn.commit();
+                        total += deleted;
+                        if (deleted < COMPACT_BATCH) {
+                            return total;
+                        }
                     }
                 }
             } catch (SQLException | RuntimeException e) {
@@ -170,6 +179,124 @@ public final class PgTupleSource implements TupleSource {
             }
         } catch (SQLException e) {
             throw new PgException("回收历史元组失败（已提交删除 " + total + " 行）", e);
+        }
+    }
+
+    /** 水位只增不减：并发的两次回收里较小的那个不该把它拉回去。 */
+    private void advanceWatermark(Connection conn, long value) throws SQLException {
+        try (var ps = Statements.of(conn,
+                "UPDATE facet_watermark SET value = GREATEST(value, ?)", connections)) {
+            ps.setLong(1, value);
+            ps.executeUpdate();
+        }
+    }
+
+    // ---- 变更流 ----
+
+    /**
+     * 拉取 {@code (from, to]} 区间内的元组变更。
+     *
+     * <p>用途是让客户端缓存做<strong>精确失效</strong>。只靠 TTL 的话，授权变更到生效之间必然
+     * 有一个窗口，而那个窗口里被收回的权限仍然放行。
+     *
+     * <p>存储层已经具备条件：撤销是闭区间不删行，所以"某条授权在哪个坐标被撤销"就记在
+     * {@code rev_to} 上。变更流因此只是对同一张表的另一种读法，不需要额外的日志表。
+     *
+     * <p><strong>批次边界永远落在坐标上。</strong>一次 {@code apply} 是原子的，把它切成两批
+     * 会让缓存看到一份改了一半的集合。{@code limit} 因此是软上限：实际返回的行数会退到最后一个
+     * 完整坐标的边界。若<em>单个</em>坐标的变更就超过 {@code limit}，这里直接拒绝而不是切开它——
+     * 悄悄切开是那种只在大批量写入时才出现、且症状是权限短暂错乱的问题。
+     *
+     * @param from  起点，开区间下界。必须不早于 {@link #watermark()}
+     * @param to    终点，闭区间上界；传 {@code HEAD} 表示追到当前
+     * @param limit 单批行数软上限
+     * @throws HistoryTruncatedException {@code from} 早于回收水位，这一段的撤销记录已被删除
+     */
+    public TupleChange.Page changes(Revision from, Revision to, int limit) {
+        if (limit <= 0) {
+            throw new IllegalArgumentException("单批上限必须为正");
+        }
+        requireConcrete(from);
+        var earliest = watermark();
+        if (from.value() < earliest.value()) {
+            throw new HistoryTruncatedException(from, earliest);
+        }
+        long upper = to.isHead() ? PgSchema.OPEN - 1 : to.value();
+        if (upper <= from.value()) {
+            return new TupleChange.Page(List.of(), from, true);
+        }
+        // 两支 UNION ALL：写入看 rev_from，撤销看 rev_to。rev_to = OPEN 的行是"仍然有效"，
+        // 不是一次撤销，必须排除掉。
+        // UNION 必须包进子查询再排序：Postgres 对 UNION 的 ORDER BY 只接受输出列名，
+        // 而这里的排序键带 COLLATE——直接写在外层会是一条语法错误的 SQL
+        var sql = """
+                SELECT object_type, object_id, relation, subject_type, subject_id, subject_rel,
+                       at, created
+                  FROM (SELECT object_type, object_id, relation,
+                               subject_type, subject_id, subject_rel,
+                               rev_from AS at, true AS created
+                          FROM facet_tuple
+                         WHERE rev_from > ? AND rev_from <= ?
+                        UNION ALL
+                        SELECT object_type, object_id, relation,
+                               subject_type, subject_id, subject_rel,
+                               rev_to AS at, false AS created
+                          FROM facet_tuple
+                         WHERE rev_to > ? AND rev_to <= ? AND rev_to <> ?) AS changes
+                 ORDER BY at, %s, created
+                 LIMIT ?""".formatted(orderBy());
+        try (var conn = connections.get(); var ps = Statements.of(conn, sql, connections)) {
+            ps.setLong(1, from.value());
+            ps.setLong(2, upper);
+            ps.setLong(3, from.value());
+            ps.setLong(4, upper);
+            ps.setLong(5, PgSchema.OPEN);
+            // 多取一行，用来判断"是否还有"以及切在哪个坐标边界上
+            ps.setInt(6, limit + 1);
+            var rows = new ArrayList<TupleChange>();
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new TupleChange(
+                            new Tuple(new ObjectRef(new ObjectType(rs.getString(1)), rs.getString(2)),
+                                    new Rel(rs.getString(3)),
+                                    Rows.toSubject(rs.getString(4), rs.getString(5), rs.getString(6))),
+                            rs.getBoolean(8),
+                            new Revision(rs.getLong(7))));
+                }
+            }
+            return page(rows, new Revision(upper), limit);
+        } catch (SQLException e) {
+            throw new PgException("拉取变更流失败", e);
+        }
+    }
+
+    /** 把多取的一行去掉，并把批次切在最后一个完整坐标上。 */
+    private static TupleChange.Page page(List<TupleChange> rows, Revision upper, int limit) {
+        if (rows.size() <= limit) {
+            return new TupleChange.Page(rows, upper, true);
+        }
+        long spill = rows.get(limit).at().value();
+        var kept = rows.stream().filter(change -> change.at().value() < spill).toList();
+        if (kept.isEmpty()) {
+            throw new IllegalArgumentException("坐标 " + spill + " 单独的变更数就超过 "
+                    + limit + "：拉变更流不能把一个坐标切成两批，请调大 limit");
+        }
+        return new TupleChange.Page(kept, kept.getLast().at(), false);
+    }
+
+    /**
+     * 变更流最早还能覆盖到的坐标。
+     *
+     * <p>{@link #compact} 会真正删掉已关闭的行，而那些行是撤销记录的唯一载体。这个水位就是
+     * "从这里之前的撤销我已经答不上来了"，{@link #changes} 据它拒绝过早的起点。
+     */
+    public Revision watermark() {
+        try (var conn = connections.get();
+             var ps = Statements.of(conn, "SELECT value FROM facet_watermark", connections);
+             var rs = ps.executeQuery()) {
+            return rs.next() ? new Revision(rs.getLong(1)) : new Revision(0);
+        } catch (SQLException e) {
+            throw new PgException("读取回收水位失败", e);
         }
     }
 

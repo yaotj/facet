@@ -5,7 +5,9 @@ import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
+import facet.core.ir.TupleChange;
 import facet.core.ir.TupleFilter;
+import facet.core.spi.HistoryTruncatedException;
 import facet.core.spi.Metrics;
 import facet.core.spi.TupleSource;
 import facet.store.memory.MemoryAttrSource;
@@ -743,6 +745,117 @@ class PdpServerTest {
                 PdpServer.Extras.NONE.withAdmin(port));
     }
 
+    /**
+     * 变更流默认关闭。
+     *
+     * <p>它等价于一份持续的增量导出：只要一个起点坐标就能跟着拉下去，拿到的是每一条授权变更的
+     * 完整内容。和运维读端点分成两项能力，是因为受众不同——这一个给每个带缓存的客户端用。
+     */
+    @Test
+    void watchIsDeniedByDefault() throws IOException {
+        var response = post("/v1/watch", "{\"from\":0}", TOKEN);
+
+        assertEquals(405, response.status(), response.body());
+    }
+
+    /** 接上变更流之后，写入与撤销都要如实报出来，{@code created} 的方向不能反。 */
+    @Test
+    void watchReturnsChanges() throws IOException {
+        var created = new TupleChange(
+                Tuple.of(FolderScenario.doc("readme"), FolderScenario.VIEWER,
+                        FolderScenario.user("dave")),
+                true, new Revision(7));
+        var revoked = new TupleChange(
+                Tuple.of(FolderScenario.doc("spec"), FolderScenario.VIEWER,
+                        FolderScenario.user("erin")),
+                false, new Revision(8));
+        ChangeFeed feed = (from, to, limit) ->
+                new TupleChange.Page(List.of(created, revoked), new Revision(8), false);
+
+        try (var server = PdpServer.start(watching(feed))) {
+            var response = post(server.port(), "/v1/watch", "{\"from\":6}", TOKEN);
+
+            assertEquals(200, response.status(), response.body());
+            assertTrue(response.body().contains(
+                    "{\"object\":{\"type\":\"doc\",\"id\":\"readme\"},\"relation\":\"viewer\","
+                            + "\"subject\":{\"type\":\"user\",\"id\":\"dave\"},"
+                            + "\"subjectRelation\":null},\"created\":true,\"at\":7"),
+                    response.body());
+            assertTrue(response.body().contains(
+                    "{\"object\":{\"type\":\"doc\",\"id\":\"spec\"},\"relation\":\"viewer\","
+                            + "\"subject\":{\"type\":\"user\",\"id\":\"erin\"},"
+                            + "\"subjectRelation\":null},\"created\":false,\"at\":8"),
+                    response.body());
+            // complete=false 是给客户端的"立刻再拉一次"信号：这段窗口里它的缓存还是错的
+            assertTrue(response.body().contains("\"nextFrom\":8"), response.body());
+            assertTrue(response.body().contains("\"complete\":false"), response.body());
+        }
+    }
+
+    /**
+     * 起点早于回收水位要给 409，不是 400。
+     *
+     * <p>错的不是这次请求的参数，而是客户端的状态：那一段的撤销记录已经被 {@code compact}
+     * 删掉了，服务端给不出完整清单。400 会把调用方引向"换个 from 再试"，而任何还能返回数据的
+     * from 都意味着它继续拿着一份缺了撤销的缓存放行已收回的权限——一个不会报错的权限泄漏。
+     */
+    @Test
+    void watchOnTruncatedHistoryIsConflict() throws IOException {
+        ChangeFeed feed = (from, to, limit) -> {
+            throw new HistoryTruncatedException(new Revision(5), new Revision(100));
+        };
+
+        try (var server = PdpServer.start(watching(feed))) {
+            var response = post(server.port(), "/v1/watch", "{\"from\":5}", TOKEN);
+
+            assertEquals(409, response.status(), response.body());
+            assertTrue(response.body().contains("history_truncated"), response.body());
+            // 水位要带出去，客户端据此才知道自己落后了多少
+            assertTrue(response.body().contains("100"), response.body());
+        }
+    }
+
+    /** 装上变更流的服务器。 */
+    private PdpServer.Config watching(ChangeFeed feed) {
+        var tuples = new MemoryTupleSource().write(FolderScenario.TUPLES);
+        var attrs = new MemoryAttrSource();
+        return new PdpServer.Config(0, FolderScenario.SCHEMA, tuples, attrs,
+                new MemoryPlanExecutor(tuples, attrs), RelationshipWriter.READ_ONLY,
+                (authorization, scope) -> TOKEN.equals(authorization), 10,
+                PdpServer.Config.DEFAULT_MAX_BODY, false,
+                PdpServer.Extras.NONE.withChangeFeed(feed));
+    }
+
+    /**
+     * 当前生效的策略要读得回来。
+     *
+     * <p>下发那一侧是只写的：一次静默失败的下发会让集群里有几台按旧策略判定，而每台都健康、
+     * 每次判定都有答案。断言只看片段而不是整个响应体——这条用例要钉的是"读得回来"，
+     * 不是把序列化格式冻进测试。
+     */
+    @Test
+    void schemaCanBeReadBack() throws IOException {
+        var response = get("/v1/schema", TOKEN);
+
+        assertEquals(200, response.status(), response.body());
+        assertTrue(response.body().contains("\"type\":\"doc\""), response.body());
+        assertTrue(response.body().contains("\"relation\":\"view\""), response.body());
+        // view 有 rewrite 且声明了可反查；viewer 是纯存储关系，rewrite 恰好是 Direct(viewer)
+        assertTrue(response.body().contains(
+                "{\"relation\":\"view\",\"computed\":true,\"listable\":true,\"targets\":[]}"),
+                response.body());
+        assertTrue(response.body().contains("\"relation\":\"viewer\",\"computed\":false"),
+                response.body());
+    }
+
+    /** 只有 {@code /v1/schema} 放开了 GET，别的端点仍然 405——放松的范围必须就是这一条路径。 */
+    @Test
+    void schemaWriteStillRequiresPost() throws IOException {
+        var response = get("/v1/check", TOKEN);
+
+        assertEquals(405, response.status(), response.body());
+    }
+
     /** 畸形 JSON 必须拿到 400，而不是空响应——Jackson 的异常是 IOException 子类，很容易漏接。 */
     @Test
     void malformedJsonIsClientError() throws IOException {
@@ -820,6 +933,25 @@ class PdpServerTest {
 
     private HttpURLConnection open(String path) throws IOException {
         return open(pdp.port(), path);
+    }
+
+    private Response get(String path, String token) throws IOException {
+        return get(pdp.port(), path, token);
+    }
+
+    private static Response get(int port, String path, String token) throws IOException {
+        var connection = open(port, path);
+        connection.setRequestMethod("GET");
+        // 同 post：不复用连接，避免端口被系统回收再分配后拿到上一个服务器的 socket
+        connection.setRequestProperty("Connection", "close");
+        if (token != null) {
+            connection.setRequestProperty("Authorization", token);
+        }
+        int status = connection.getResponseCode();
+        var stream = status < 400 ? connection.getInputStream() : connection.getErrorStream();
+        try (stream) {
+            return new Response(status, new String(stream.readAllBytes(), StandardCharsets.UTF_8));
+        }
     }
 
     private static HttpURLConnection open(int port, String path) throws IOException {

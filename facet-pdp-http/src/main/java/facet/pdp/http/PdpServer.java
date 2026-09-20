@@ -17,12 +17,14 @@ import facet.core.eval.Validator;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
+import facet.core.ir.Perm;
 import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
 import facet.core.ir.TupleFilter;
 import facet.core.spi.AttrSource;
+import facet.core.spi.HistoryTruncatedException;
 import facet.core.spi.Metrics;
 import facet.core.spi.PlanExecutor;
 import facet.core.spi.StorageException;
@@ -35,6 +37,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -77,17 +80,18 @@ public final class PdpServer implements AutoCloseable {
                          AuditSink audit,
                          Metrics metrics,
                          Duration deadline,
-                         RelationshipAdmin admin) {
+                         RelationshipAdmin admin,
+                         ChangeFeed changes) {
 
-        /** 全关。缓存、陈旧读、远程下发 schema、审计、观测、期限、运维接口都是要显式打开的能力。 */
+        /** 全关。缓存、陈旧读、远程下发 schema、审计、观测、期限、运维接口、变更流都是要显式打开的能力。 */
         public static final Extras NONE = new Extras(DecisionCache.NONE, RevisionSource.NONE,
                 Duration.ZERO, SchemaDecoder.DENIED, AuditSink.NONE, Metrics.NOOP, Duration.ZERO,
-                RelationshipAdmin.DENIED);
+                RelationshipAdmin.DENIED, ChangeFeed.DENIED);
 
         public Extras {
             if (cache == null || revisions == null || staleness == null
                     || schemaDecoder == null || audit == null || metrics == null
-                    || deadline == null || admin == null) {
+                    || deadline == null || admin == null || changes == null) {
                 throw new IllegalArgumentException("可选能力用 NONE / DENIED / ZERO 表达关闭，不用 null");
             }
             if (staleness.isNegative()) {
@@ -100,21 +104,25 @@ public final class PdpServer implements AutoCloseable {
 
         /** 只缓存带具体坐标的请求。 */
         public Extras withCache(DecisionCache sink) {
-            return new Extras(sink, revisions, staleness, schemaDecoder, audit, metrics, deadline, admin);
+            return new Extras(sink, revisions, staleness, schemaDecoder, audit, metrics, deadline,
+                    admin, changes);
         }
 
         /** 接受有界陈旧，读 HEAD 的请求因此也能进缓存。 */
         public Extras withStaleness(RevisionSource source, Duration window) {
-            return new Extras(cache, source, window, schemaDecoder, audit, metrics, deadline, admin);
+            return new Extras(cache, source, window, schemaDecoder, audit, metrics, deadline,
+                    admin, changes);
         }
 
         /** 打开远程下发 schema。 */
         public Extras withSchemaDecoder(SchemaDecoder decoder) {
-            return new Extras(cache, revisions, staleness, decoder, audit, metrics, deadline, admin);
+            return new Extras(cache, revisions, staleness, decoder, audit, metrics, deadline,
+                    admin, changes);
         }
 
         public Extras withAudit(AuditSink sink) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, sink, metrics, deadline, admin);
+            return new Extras(cache, revisions, staleness, schemaDecoder, sink, metrics, deadline,
+                    admin, changes);
         }
 
         /**
@@ -124,7 +132,8 @@ public final class PdpServer implements AutoCloseable {
          * 每请求一个虚拟线程，一次深层判定会调它几十次。
          */
         public Extras withMetrics(Metrics sink) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, audit, sink, deadline, admin);
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, sink, deadline,
+                    admin, changes);
         }
 
         /**
@@ -141,7 +150,8 @@ public final class PdpServer implements AutoCloseable {
          * 所以它是真的上限，不是"检查点之间的近似"。
          */
         public Extras withDeadline(Duration budget) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, budget, admin);
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, budget,
+                    admin, changes);
         }
 
         /**
@@ -153,7 +163,23 @@ public final class PdpServer implements AutoCloseable {
          * 这两件事都应当是部署方明确决定要开的，而不是装上 PDP 就白送。
          */
         public Extras withAdmin(RelationshipAdmin port) {
-            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, deadline, port);
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, deadline,
+                    port, changes);
+        }
+
+        /**
+         * 打开变更流：让客户端缓存做精确失效。
+         *
+         * <p>默认关闭，因为<strong>变更流等价于一份持续的增量导出，会把每一条授权变更的完整
+         * 内容交出去</strong>。判定端点要求调用方先知道问什么，运维读端点至少还是一次性的；
+         * 而变更流只要一个起点坐标就能持续跟着拉，跟到最后拿到的是整张授权图的演化史。
+         *
+         * <p>与 {@link #withAdmin} 分开而不是合成一项能力：两者受众不同——变更流给每个带缓存的
+         * 客户端用，运维接口只给运维用。合成一项，打开变更流就等于把"一次调用清空全库"也打开了。
+         */
+        public Extras withChangeFeed(ChangeFeed feed) {
+            return new Extras(cache, revisions, staleness, schemaDecoder, audit, metrics, deadline,
+                    admin, feed);
         }
     }
 
@@ -259,8 +285,18 @@ public final class PdpServer implements AutoCloseable {
                 exchange -> handle(exchange, Authenticator.Scope.READ, this::readRelationships));
         server.createContext("/v1/relationships/delete",
                 exchange -> handle(exchange, Authenticator.Scope.WRITE, this::deleteRelationships));
-        server.createContext("/v1/schema",
-                exchange -> handle(exchange, Authenticator.Scope.WRITE, this::loadSchema));
+        server.createContext("/v1/watch",
+                exchange -> handle(exchange, Authenticator.Scope.READ, this::watch));
+        // 唯一一条按方法分派的路径：GET 读回当前策略轮廓（READ），POST 下发新策略（WRITE）。
+        // 分派写在这里而不是放进 handle，是为了让"只有这一条路放开了 GET"在注册表上一眼看得见；
+        // 鉴权、请求体上限、错误映射全部仍由 handle 承担，两个分支各自只多传一个允许的方法
+        server.createContext("/v1/schema", exchange -> {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                handle(exchange, "GET", Authenticator.Scope.READ, this::viewSchema);
+            } else {
+                handle(exchange, Authenticator.Scope.WRITE, this::loadSchema);
+            }
+        });
         server.createContext("/v1/healthz", PdpServer::healthz);
     }
 
@@ -557,6 +593,73 @@ public final class PdpServer implements AutoCloseable {
         return new Wire.SchemaResponse(true, schema.types().size(), relations);
     }
 
+    /**
+     * 拉取一段变更流。
+     *
+     * <p>存在的理由是判定缓存：只靠 TTL 失效，授权变更到生效之间必然有一个窗口，而那个窗口里
+     * 被收回的权限仍然放行。客户端记住上次的 {@code nextFrom}，就能把失效做成精确的。
+     *
+     * <p>分页上限与判定端点共用 {@code maxPageSize}，但它在这里是<strong>软上限</strong>：
+     * 批次边界只能落在坐标上，所以实际返回可能少于 limit（见 {@code TupleChange.Page}）。
+     *
+     * <p>不需要 {@code Ctx.run}：变更流吃的是两个显式坐标，它要读的恰恰是"两个版本之间发生了
+     * 什么"，而 {@code Ctx.current().at()} 表达的是"在某一个版本上看世界"——后者答不了前者。
+     */
+    private Object watch(HttpExchange exchange, byte[] body) throws IOException {
+        var request = JSON.readValue(body, Wire.WatchRequest.class);
+        int limit = Math.min(
+                request.limit() == null ? config.maxPageSize() : Math.max(request.limit(), 1),
+                config.maxPageSize());
+        var from = new Revision(request.from());
+        var to = request.to() == null ? Revision.HEAD : new Revision(request.to());
+
+        var page = config.extras().changes().changes(from, to, limit);
+
+        var changes = new ArrayList<Wire.ChangeJson>(page.changes().size());
+        page.changes().forEach(change -> changes.add(new Wire.ChangeJson(
+                json(change.tuple()), change.created(), change.at().value())));
+        return new Wire.WatchResponse(changes, page.nextFrom().value(), page.complete());
+    }
+
+    /**
+     * 读回当前生效的策略轮廓。
+     *
+     * <p>{@code POST} 那一侧是只写的：下发成功与否只能看当次响应，之后就没有任何办法确认
+     * "这个 PDP 现在跑的是哪一版"。一次静默失败的下发会让整个集群里有几台按旧策略判定，
+     * 而每台都健康、每次判定都有答案。
+     *
+     * <p>用 {@code READ} 能力而不是 {@code WRITE}：它暴露的是关系图的<em>形状</em>（有哪些类型、
+     * 哪些关系可反查），不含任何元组。能问判定的客户端本来就能从判定结果里反推出这些。
+     */
+    private Object viewSchema(HttpExchange exchange, byte[] body) {
+        var schema = policy.schema();
+        var types = new ArrayList<Wire.TypeView>(schema.types().size());
+        schema.types().forEach((type, def) -> {
+            var relations = new ArrayList<Wire.RelationView>(def.relations().size());
+            def.relations().forEach((rel, relDef) -> relations.add(new Wire.RelationView(
+                    rel.name(), computed(rel, relDef), relDef.listable(),
+                    relDef.targets().stream().map(ObjectType::name).sorted().toList())));
+            relations.sort(Comparator.comparing(Wire.RelationView::relation));
+            types.add(new Wire.TypeView(type.name(), relations));
+        });
+        // schema 里的两层都是 Map.copyOf，迭代顺序未定义。排一下序，好让两次请求、
+        // 两台实例的响应可以直接 diff——否则"这两台跑的是同一版吗"又得靠人去比对
+        types.sort(Comparator.comparing(Wire.TypeView::type));
+        return new Wire.SchemaView(types);
+    }
+
+    /**
+     * 这条关系是不是有 rewrite 定义。
+     *
+     * <p>判据取自 {@code Schema.tuples(rel, ...)}：纯存储关系的 rewrite 恰好是
+     * {@code Direct(自己)}，所以"不等于 Direct(本关系名)"就是"有定义"。用 record 的相等性
+     * 比较整棵树，而不是 {@code instanceof Perm.Direct}——后者会把 {@code Direct(别的关系)}
+     * 这种真正的 rewrite（"viewer 的元组也算 editor"）误报成纯存储关系。
+     */
+    private static boolean computed(Rel rel, Schema.RelDef def) {
+        return !def.rewrite().equals(new Perm.Direct(rel));
+    }
+
     private static void healthz(HttpExchange exchange) throws IOException {
         try (exchange) {
             respond(exchange, 200, "{\"status\":\"ok\"}".getBytes(StandardCharsets.UTF_8));
@@ -570,11 +673,21 @@ public final class PdpServer implements AutoCloseable {
         Object apply(HttpExchange exchange, byte[] body) throws IOException;
     }
 
+    /** 绝大多数端点只接受 {@code POST}：它们都带请求体，而且不少是写操作。 */
     private void handle(HttpExchange exchange, Authenticator.Scope scope, Endpoint endpoint)
             throws IOException {
+        handle(exchange, "POST", scope, endpoint);
+    }
+
+    /**
+     * @param method 该端点允许的唯一方法。做成参数而不是"放开一组方法"：允许的方法一多，
+     *               鉴权能力就得跟着方法分叉，而那个分叉一旦出错就是读凭据拿到了写权限
+     */
+    private void handle(HttpExchange exchange, String method, Authenticator.Scope scope,
+                        Endpoint endpoint) throws IOException {
         try (exchange) {
-            if (!"POST".equals(exchange.getRequestMethod())) {
-                error(exchange, 405, "method_not_allowed", "只接受 POST");
+            if (!method.equals(exchange.getRequestMethod())) {
+                error(exchange, 405, "method_not_allowed", "只接受 " + method);
                 return;
             }
             if (!config.authenticator().allows(
@@ -612,6 +725,15 @@ public final class PdpServer implements AutoCloseable {
                 error(exchange, 504, "deadline_exceeded", "判定超过请求期限");
             } catch (EvalException e) {
                 error(exchange, 422, "cannot_evaluate", e.getMessage());
+            } catch (HistoryTruncatedException e) {
+                // 409 而不是 400：错的不是这次请求的参数，而是<strong>客户端的状态与服务端不再
+                // 一致</strong>——它落后得太多，那一段的撤销记录已经被回收掉了。正确处置是丢弃
+                // 本地缓存重新开始，而不是改参数重试。给 400 会把调用方引向"换个 from 再试"，
+                // 而任何还能返回数据的 from 都意味着它继续拿着一份缺了撤销的缓存放行已收回的权限。
+                // 消息里带上 earliest，客户端据此就能知道自己落后了多少
+                error(exchange, 409, "history_truncated",
+                        "起始坐标早于历史回收水位 " + e.earliest().value()
+                                + "：这一段的撤销记录已被删除。请丢弃本地缓存，从当前 HEAD 重新开始");
             } catch (StorageException e) {
                 // 可重试的存储故障给 503 而不是 500：500 的语义是"服务端有 bug"，
                 // 网关和客户端不会重试；而连接断开、死锁、语句超时恰恰重试一次就好。

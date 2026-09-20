@@ -164,11 +164,63 @@ final class Wire {
     /** {@code POST /v1/relationships/delete} 响应体，返回本次撤销生效的坐标。 */
     record DeleteWhereResponse(long revision) {}
 
+    /**
+     * {@code POST /v1/watch} 请求体。
+     *
+     * <p>{@code from} 必填：漏掉它最自然的兜底是"从 0 开始"，那等于把整库历史当成一次增量
+     * 推给客户端，而客户端会以为自己只是补了一小段。
+     *
+     * <p>{@code to} 为 {@code null} 表示追到 HEAD。刻意不提供"一直等到有变更"的语义——
+     * 这是轮询接口，等待要由客户端的调度决定，服务端押住连接就成了另一套协议。
+     */
+    record WatchRequest(Long from, Long to, Integer limit) {
+
+        WatchRequest {
+            require(from, "from");
+        }
+    }
+
+    /**
+     * {@code POST /v1/watch} 响应体。
+     *
+     * <p>{@code nextFrom} 是下一次的起点，<strong>不是</strong>行游标：一次授权变更是原子的，
+     * 批次边界只能落在坐标上。{@code complete} 为 {@code false} 表示还没追到上界，
+     * 客户端应当立刻再拉一次而不是等到下个轮询周期——中间这段时间里缓存是错的。
+     */
+    record WatchResponse(List<ChangeJson> changes, long nextFrom, boolean complete) {}
+
+    /** 变更流里的单条变更。{@code created} 为 {@code false} 是撤销。 */
+    record ChangeJson(TupleJson tuple, boolean created, long at) {}
+
     /** 统一错误体。 */
     record ErrorResponse(String error, String message) {}
 
     /** {@code POST /v1/schema} 响应体。{@code relations} 是新策略里的关系总数，便于核对下发是否完整。 */
     record SchemaResponse(boolean reloaded, int types, int relations) {}
+
+    /**
+     * {@code GET /v1/schema} 响应体：当前生效的策略轮廓。
+     *
+     * <p>用途是运维自查"这个 PDP 现在跑的是哪一版"。下发 schema 的那一侧是只写的，
+     * 没有这个端点就只能靠部署记录去猜，而"下发失败但没人发现"恰恰是最安静的故障。
+     *
+     * <p><strong>刻意不序列化 {@code Perm} 树。</strong>那份编码由 {@code facet-ir-json} 拥有，
+     * 在这里再写一份等于让同一个东西有两种编码，两边会各自演进然后分叉——到时候一份 schema
+     * 从这个端点读出来、再从那个解码器灌回去就不是同一份了。要完整定义就用 IR JSON。
+     */
+    record SchemaView(List<TypeView> types) {}
+
+    /** 一个对象类型上的关系列表。 */
+    record TypeView(String type, List<RelationView> relations) {}
+
+    /**
+     * 一条关系的轮廓。
+     *
+     * @param computed 有 rewrite 定义（而不仅仅持有原始元组）
+     * @param listable 是否声明可反查。它是个架构事实，运维需要看得到
+     * @param targets  原始元组主体侧允许的对象类型；计算关系为空
+     */
+    record RelationView(String relation, boolean computed, boolean listable, List<String> targets) {}
 
     private static void require(Object value, String field) {
         if (value == null) {
