@@ -11,6 +11,20 @@
     <name>Facet</name>
     <description>统一权限内核：ACL / RBAC / ABAC / ReBAC 编译到同一份 IR</description>
 
+    <!--
+      声明在父 pom 里，所有子模块继承——发布出去的每个 pom 都带上许可证信息。
+      database-mcp-server 把 facet-core / facet-store-memory / facet-dsl-rebac 打进了它的
+      fat jar 并随 Apache-2.0 的公开仓库分发；没有这段声明，那三个 jar 在法律上默认是
+      "保留所有权利"，下游无权再分发。
+    -->
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
