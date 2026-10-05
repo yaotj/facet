@@ -13,9 +13,7 @@
 
     <!--
       声明在父 pom 里，所有子模块继承——发布出去的每个 pom 都带上许可证信息。
-      database-mcp-server 把 facet-core / facet-store-memory / facet-dsl-rebac 打进了它的
-      fat jar 并随 Apache-2.0 的公开仓库分发；没有这段声明，那三个 jar 在法律上默认是
-      "保留所有权利"，下游无权再分发。
+      没有这段声明，分发出去的 jar 在法律上默认是"保留所有权利"，下游无权再分发。
     -->
     <licenses>
         <license>
@@ -105,6 +103,9 @@
 
         <!-- 判定矩阵 golden file 的测试基建 -->
         <subproject>facet-testkit</subproject>
+
+        <!-- JMH 基准：check / lookupResources 的可复跑测量 -->
+        <subproject>facet-benchmark</subproject>
     </subprojects>
 
     <build>
@@ -115,11 +116,16 @@
                     <artifactId>maven-compiler-plugin</artifactId>
                     <version>${maven-compiler-plugin.version}</version>
                 </plugin>
-                <plugin>
-                    <groupId>org.apache.maven.plugins</groupId>
-                    <artifactId>maven-surefire-plugin</artifactId>
-                    <version>${maven-surefire-plugin.version}</version>
-                </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+            </plugin>
             </plugins>
         </pluginManagement>
     </build>

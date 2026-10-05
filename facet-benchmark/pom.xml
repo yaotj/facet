@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.1.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.1.0 https://maven.apache.org/xsd/maven-4.1.0.xsd">
+
+    <!-- 4.1.0 model：parent 坐标按目录推断 -->
+    <parent/>
+
+    <artifactId>facet-benchmark</artifactId>
+    <name>Facet Benchmark</name>
+    <description>JMH 基准：check 与 lookupResources 关键路径的可复跑测量。非模块化，靠 classpath 消费内核。</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-dsl-rebac</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-store-memory</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-core</artifactId>
+            <version>1.37</version>
+        </dependency>
+        <dependency>
+            <groupId>org.openjdk.jmh</groupId>
+            <artifactId>jmh-generator-annprocess</artifactId>
+            <version>1.37</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Maven 4 不再从编译 classpath 自动发现注解处理器，必须显式声明 JMH 的代码生成器 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.openjdk.jmh</groupId>
+                            <artifactId>jmh-generator-annprocess</artifactId>
+                            <version>1.37</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <!-- 一键跑基准：mvn -pl facet-benchmark exec:exec -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <mainClass>facet.benchmark.BenchmarkMain</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
