@@ -37,6 +37,22 @@
         </dependency>
     </dependencies>
 
+    <properties>
+        <!--
+          基准不是给下游用的库，不发布到 Central。
+
+          这里只挡发布链路（deploy）与附属产物（sources/javadoc/签名）：父 pom 上这些插件
+          绑在 package/verify 阶段，不挡就会白跑一遍 javadoc 与签名，产物还没人用。
+          主 jar 保留——maven-jar-plugin 的 jar goal 没有 skip 参数，强行去掉反而要改 packaging，
+          而 deploy 已被 skip，它不会出现在 Central 上，留着对本地跑基准也无影响。
+        -->
+        <maven.install.skip>true</maven.install.skip>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <maven.source.skip>true</maven.source.skip>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <gpg.skip>true</gpg.skip>
+    </properties>
+
     <build>
         <plugins>
             <!-- Maven 4 不再从编译 classpath 自动发现注解处理器，必须显式声明 JMH 的代码生成器 -->

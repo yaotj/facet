@@ -5,7 +5,7 @@ Java 25 的授权内核。把"这个人能不能做这件事"从业务代码里�
 不是框架，没有运行时依赖。内核模块 `facet-core` 的 `module-info.java` 里一个 `requires` 都没有。
 
 ```
-io.github.yaotj:facet-core:0.1.0-SNAPSHOT
+io.github.yaotj:facet-core:1.0.0
 ```
 
 ## 它解决什么
@@ -225,6 +225,8 @@ mvn test -Dfacet.golden.update=true  # 重新生成 SQL / explain 的 golden 基
 
 ## 状态
 
-`0.1.0-SNAPSHOT`，尚未发布到 Maven Central。
+`1.0.0`，尚未发布到 Maven Central。
 
-诚实地说：这套 API **还没有被任何外部使用者验证过**。测试断言的是语义正确性与跨实现一致性，但"手写 schema 啰嗦不啰嗦"、"`Ctx.run` 包在业务代码里别不别扭"这类问题只有真实接入才能暴露。所以在有第一个使用者之前，公开 API 可能还会改。
+发布配置已就绪（`mvn -Pcentral deploy`），剩下的是 Central 账号与 GPG 密钥这类只能由发布者本人完成的步骤。
+
+诚实地说：测试断言的是语义正确性与跨实现一致性，但"手写 schema 啰嗦不啰嗦"、"`Ctx.run` 包在业务代码里别不别扭"这类问题只有真实接入才能暴露。`1.0.0` 意味着公开 API 从此按语义化版本承诺兼容，但第一个真实使用者之前，它还没有被端到端验证过。

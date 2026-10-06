@@ -5,11 +5,30 @@
 
     <groupId>io.github.yaotj</groupId>
     <artifactId>facet-parent</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>pom</packaging>
 
     <name>Facet</name>
     <description>统一权限内核：ACL / RBAC / ABAC / ReBAC 编译到同一份 IR</description>
+    <url>https://github.com/yaotj/facet</url>
+
+    <!--
+      Central 要求 developers 与 scm 必填，缺了整批 deployment 会被 validation 拒收。
+      两者都是"发布许可证"，不是可选的社交链接——Central 用它们把制品接回它的源码与责任人。
+    -->
+    <developers>
+        <developer>
+            <id>yaotj</id>
+            <name>yaotj</name>
+            <url>https://github.com/yaotj</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/yaotj/facet.git</connection>
+        <developerConnection>scm:git:ssh://github.com:yaotj/facet.git</developerConnection>
+        <url>https://github.com/yaotj/facet</url>
+    </scm>
 
     <!--
       声明在父 pom 里，所有子模块继承——发布出去的每个 pom 都带上许可证信息。
@@ -45,6 +64,15 @@
         <postgresql.version>42.7.4</postgresql.version>
         <testcontainers.version>1.21.3</testcontainers.version>
         <jackson.version>2.18.2</jackson.version>
+
+        <!--
+          Central 要求每个 jar 配 sources + javadoc，且所有产物都要 GPG 签名（.asc）。
+          版本集中在这里，避免散落在 <plugin> 里。
+        -->
+        <maven-source-plugin.version>3.3.1</maven-source-plugin.version>
+        <maven-javadoc-plugin.version>3.11.2</maven-javadoc-plugin.version>
+        <maven-gpg-plugin.version>3.2.7</maven-gpg-plugin.version>
+        <central-publishing-maven-plugin.version>0.8.0</central-publishing-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -128,5 +156,120 @@
             </plugin>
             </plugins>
         </pluginManagement>
+
+        <plugins>
+            <!--
+              发布相关的插件全部挂在父 pom 上、由子模块继承，而不是逐个模块重复声明。
+              facet-benchmark 排除在外：JMH 基准不是给下游用的库，发出去只会污染检索结果。
+            -->
+
+            <!-- Central 硬性要求：每个 jar 都要有 -sources.jar -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>${maven-source-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Central 硬性要求：每个 jar 都要有 -javadoc.jar -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>${maven-javadoc-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <!--
+                      本项目的文档全是中文 javadoc，-doclint:none 是为了让 doclint 别拿
+                      HTML/自闭合标签这类无意义的规则挑错；缺文档引用之类真正的错误仍应暴露。
+                    -->
+                    <doclint>none</doclint>
+                    <quiet>true</quiet>
+                    <encoding>UTF-8</encoding>
+                    <charset>UTF-8</charset>
+                    <docencoding>UTF-8</docencoding>
+
+                    <!--
+                      release 与 preview 开关必须显式给出：
+
+                      javadoc 不继承编译器的 maven.compiler.release / compilerArgs，它按
+                      "当前 JDK + 默认 preview 开关"解析源码。于是 StructuredTaskScope
+                      （facet-fanout-structured）在编译期是正式 API、在 javadoc 期却被判为
+                      预览 API 而失败——两者对同一个 API 的判断不一致。
+
+                      注意 preview 开关只能走 additionalOptions：maven-javadoc-plugin 3.11.2
+                      没有 enablePreview 参数（用 -X 看到的同名配置项属于 compiler 插件的 Mojo，
+                      写在这里不生效）。release 参数则必须与 preview 开关同时存在，
+                      两者一起才与编译期保持一致。
+                    -->
+                    <release>${maven.compiler.release}</release>
+                    <additionalOptions>
+                        <additionalOption>--enable-preview</additionalOption>
+                    </additionalOptions>
+                </configuration>
+            </plugin>
+
+        </plugins>
     </build>
+
+    <profiles>
+        <!--
+          签名与上传只在这个 profile 里生效。
+
+          理由很实际：gpg-plugin 绑在 verify 阶段，留在默认构建里会让每一次本地
+          mvn install 都要求 GPG 私钥——没有密钥的开发者（和 CI 的普通构建）直接失败。
+          发布是少数动作，不该由它来约束所有人的日常构建。
+        -->
+        <profile>
+            <id>central</id>
+            <build>
+                <plugins>
+                    <!-- Central 硬性要求：所有产物 GPG/PGP 签名 -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>${maven-gpg-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>${central-publishing-maven-plugin.version}</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <!--
+                              自动发布：validation 通过即同步到 Central。
+                              首次发布建议先用 false，确认 validation 结果无误后再改 true——
+                              Central 发布后不可撤回，这一步的差别很实质。
+                            -->
+                            <autoPublish>false</autoPublish>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>
