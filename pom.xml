@@ -1,4 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  本工程用 Maven 4 的 POM 4.1.0 模型（<subprojects> 自动发现子项目、<parent/> 留空由
+  Maven 4 按目录推断坐标）。这是构建期模型，保留它不损失任何能力。
+
+  发布到 Central 的坑在这里：central-publishing-maven-plugin 目前仍按 Maven 3 语义把
+  工程的 build POM（这里是 4.1.0 命名空间）当作 <artifactId>.pom 上传，而 Central 的标准
+  解析器只认 POM/4.0.0，于是整批 deployment 判 "Failed to get coordinates"。
+
+  解法不是改构建模型，而是让上传的 pom 本身是合规的 4.0.0 consumer POM：
+  - .mvn/maven-user.properties 里 maven.consumer.pom.flatten=true，让 Maven 4 产出
+    自包含、内联了 parent / url / licenses / scm / developers 的 consumer POM；
+  - 中央插件配置里用 forcedStagingDirectory 指向一份手工 assemble 的 staging 目录，
+    其中 <artifactId>.pom 用的是 consumer POM（重命名为 xxx.pom），而不是 4.1.0 源 pom。
+  这样既保留 4.1.0 构建模型，又能让 Central 收到可解析的制品。
+-->
 <project xmlns="http://maven.apache.org/POM/4.1.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.1.0 https://maven.apache.org/xsd/maven-4.1.0.xsd">
@@ -72,7 +87,7 @@
         <maven-source-plugin.version>3.3.1</maven-source-plugin.version>
         <maven-javadoc-plugin.version>3.11.2</maven-javadoc-plugin.version>
         <maven-gpg-plugin.version>3.2.7</maven-gpg-plugin.version>
-        <central-publishing-maven-plugin.version>0.8.0</central-publishing-maven-plugin.version>
+        <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -257,15 +272,55 @@
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
                         <version>${central-publishing-maven-plugin.version}</version>
-                        <extensions>true</extensions>
+                        <executions>
+                            <execution>
+                                <id>central-publish</id>
+                                <phase>deploy</phase>
+                                <goals>
+                                    <goal>publish</goal>
+                                </goals>
+                            </execution>
+                        </executions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
+                            <!--
+                              Maven 4 的 source pom 用的是 POM/4.1.0 命名空间，Central 的标准
+                              解析器读不了这种格式，于是整份被判 "Failed to get coordinates"，
+                              并连带报出 url / licenses / scm / developers 全部缺失
+                              —— 哪怕这些信息在父 pom 里其实都有。
+                              （实测一次 deployment 330 条错误，全部源于此。）
+
+                              真正能被 Central 正确解析的是 flatten 后的 consumer pom：
+                              它是 POM/4.0.0 命名空间、parent 已内联、依赖带版本。
+                              所以这里把 4.1.0 的 source pom 挡在 bundle 外，只上传 consumer pom。
+                            -->
+                            <excludeArtifacts>
+                                <excludeArtifact>*:*-build.pom</excludeArtifact>
+                                <excludeArtifact>*:*-build.pom.asc</excludeArtifact>
+                            </excludeArtifacts>
                             <!--
                               自动发布：validation 通过即同步到 Central。
                               首次发布建议先用 false，确认 validation 结果无误后再改 true——
                               Central 发布后不可撤回，这一步的差别很实质。
                             -->
                             <autoPublish>false</autoPublish>
+                        </configuration>
+                    </plugin>
+
+                    <!--
+                      Maven 4 下不能用 extensions=true：它替换掉 deploy 阶段的默认绑定，
+                      却没把自己的 publish goal 注册进去，结果 deploy 阶段静默消失——
+                      BUILD SUCCESS 但什么都没上传。（-X 里能看到 lifecycle 含 deploy，
+                      实际既没有 maven-deploy-plugin 也没有 central 的 publish。）
+                      代价是 default-deploy 会回来，而它没有 distributionManagement 就先失败，
+                      所以必须显式 skip 掉它。
+                    -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-deploy-plugin</artifactId>
+                        <version>3.1.3</version>
+                        <configuration>
+                            <skip>true</skip>
                         </configuration>
                     </plugin>
                 </plugins>

@@ -3,8 +3,17 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.1.0 https://maven.apache.org/xsd/maven-4.1.0.xsd">
 
-    <!-- 4.1.0 model：parent 坐标按目录推断 -->
-    <parent/>
+    <!--
+      4.1.0 model 本可让 <parent/> 留空、由 Maven 4 按目录推断坐标，但发布到 Central 的
+      是这份源 pom，而 Central 的标准解析器读到空的 parent 坐标会直接判 Invalid POM。
+      （Maven 4 自己装进 ~/.m2 的是推断后的完整 pom，但 central-staging 打包的是源文件。）
+      所以显式写全坐标：本地构建与发布两侧都拿到可解析的 pom。
+    -->
+    <parent>
+        <groupId>io.github.yaotj</groupId>
+        <artifactId>facet-parent</artifactId>
+        <version>1.0.0</version>
+    </parent>
 
     <artifactId>facet-fanout-structured</artifactId>
     <name>Facet Fanout :: Structured Concurrency</name>

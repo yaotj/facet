@@ -10,3 +10,6 @@ target/
 
 # GPG 公钥导出：Central 校验自己去 keyserver 查，这个文件只是本地备份，不进版本库
 central.asc
+
+# 助手本地工作记忆，不进版本库
+.workbuddy/

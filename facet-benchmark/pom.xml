@@ -3,12 +3,38 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.1.0 https://maven.apache.org/xsd/maven-4.1.0.xsd">
 
-    <!-- 4.1.0 model：parent 坐标按目录推断 -->
-    <parent/>
+    <!--
+      4.1.0 model 本可让 <parent/> 留空、由 Maven 4 按目录推断坐标，但发布到 Central 的
+      是这份源 pom，而 Central 的标准解析器读到空的 parent 坐标会直接判 Invalid POM。
+      （Maven 4 自己装进 ~/.m2 的是推断后的完整 pom，但 central-staging 打包的是源文件。）
+      所以显式写全坐标：本地构建与发布两侧都拿到可解析的 pom。
+    -->
+    <parent>
+        <groupId>io.github.yaotj</groupId>
+        <artifactId>facet-parent</artifactId>
+        <version>1.0.0</version>
+    </parent>
 
     <artifactId>facet-benchmark</artifactId>
     <name>Facet Benchmark</name>
     <description>JMH 基准：check 与 lookupResources 关键路径的可复跑测量。非模块化，靠 classpath 消费内核。</description>
+
+    <properties>
+        <!--
+          基准不是给下游用的库，必须整包排除在发布之外。
+
+          skipPublishing 是 central-publishing-maven-plugin 自己的开关（0.9.0 起按模块独立生效）。
+          只设 maven.deploy.skip 挡不住它——那仅对 maven-deploy-plugin 有效，central 插件照收不误，
+          结果 benchmark 带着"只有 jar、没有 sources 与 javadoc"的形态混进 bundle，
+          整批 validation 被判失败（Central 要求每个 jar 都配 sources + javadoc）。
+        -->
+        <skipPublishing>true</skipPublishing>
+        <maven.install.skip>true</maven.install.skip>
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <maven.source.skip>true</maven.source.skip>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <gpg.skip>true</gpg.skip>
+    </properties>
 
     <dependencies>
         <dependency>
@@ -36,22 +62,6 @@
             <scope>provided</scope>
         </dependency>
     </dependencies>
-
-    <properties>
-        <!--
-          基准不是给下游用的库，不发布到 Central。
-
-          这里只挡发布链路（deploy）与附属产物（sources/javadoc/签名）：父 pom 上这些插件
-          绑在 package/verify 阶段，不挡就会白跑一遍 javadoc 与签名，产物还没人用。
-          主 jar 保留——maven-jar-plugin 的 jar goal 没有 skip 参数，强行去掉反而要改 packaging，
-          而 deploy 已被 skip，它不会出现在 Central 上，留着对本地跑基准也无影响。
-        -->
-        <maven.install.skip>true</maven.install.skip>
-        <maven.deploy.skip>true</maven.deploy.skip>
-        <maven.source.skip>true</maven.source.skip>
-        <maven.javadoc.skip>true</maven.javadoc.skip>
-        <gpg.skip>true</gpg.skip>
-    </properties>
 
     <build>
         <plugins>
