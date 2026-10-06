@@ -1,9 +1,9 @@
 package facet.store.memory;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.Deadline;
-import facet.core.eval.DeadlineExceededException;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.Deadline;
+import facet.core.runtime.DeadlineExceededException;
 import facet.core.eval.Expander;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;

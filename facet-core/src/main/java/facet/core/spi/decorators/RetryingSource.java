@@ -1,10 +1,13 @@
-package facet.core.spi;
+package facet.core.spi.decorators;
 
 import facet.core.ir.AttrKey;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
 import facet.core.ir.Rel;
 import facet.core.ir.SubjectRef;
+import facet.core.spi.AttrSource;
+import facet.core.spi.StorageException;
+import facet.core.spi.TupleSource;
 
 import java.time.Duration;
 import java.util.Collection;

@@ -1,7 +1,7 @@
 package facet.store.pg;
 
-import facet.core.eval.Ctx;
-import facet.core.eval.DeadlineExceededException;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.DeadlineExceededException;
 
 import java.sql.PreparedStatement;
 import java.sql.SQLException;

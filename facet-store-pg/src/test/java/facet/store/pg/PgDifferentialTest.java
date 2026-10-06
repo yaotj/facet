@@ -1,11 +1,11 @@
 package facet.store.pg;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.eval.Expander;
-import facet.core.eval.Keys;
+import facet.core.sem.Keys;
 import facet.core.eval.Planner;
-import facet.core.eval.Validator;
+import facet.core.schema.Validator;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Revision;

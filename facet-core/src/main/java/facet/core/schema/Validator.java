@@ -1,4 +1,4 @@
-package facet.core.eval;
+package facet.core.schema;
 
 import facet.core.ir.AttrKey;
 import facet.core.ir.Cond;

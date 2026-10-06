@@ -1,9 +1,9 @@
 package facet.benchmark;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.eval.Planner;
-import facet.core.eval.Schema;
+import facet.core.schema.Schema;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;

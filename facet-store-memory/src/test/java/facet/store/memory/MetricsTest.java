@@ -1,9 +1,9 @@
 package facet.store.memory;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.EvalException;
-import facet.core.eval.Schema;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.EvalException;
+import facet.core.schema.Schema;
 import facet.core.ir.AttrKey;
 import facet.core.ir.Cond;
 import facet.core.ir.Perm;

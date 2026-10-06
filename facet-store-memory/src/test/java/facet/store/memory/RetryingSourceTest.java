@@ -1,14 +1,14 @@
 package facet.store.memory;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.ir.AttrKey;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
 import facet.core.ir.Rel;
 import facet.core.ir.SubjectRef;
 import facet.core.spi.AttrSource;
-import facet.core.spi.RetryingSource;
+import facet.core.spi.decorators.RetryingSource;
 import facet.core.spi.StorageException;
 import facet.core.spi.TupleSource;
 import org.junit.jupiter.api.Test;

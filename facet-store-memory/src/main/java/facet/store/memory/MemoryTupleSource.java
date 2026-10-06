@@ -1,7 +1,7 @@
 package facet.store.memory;
 
-import facet.core.eval.Ctx;
-import facet.core.eval.Keys;
+import facet.core.runtime.Ctx;
+import facet.core.sem.Keys;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
 import facet.core.ir.Rel;
@@ -102,7 +102,7 @@ public final class MemoryTupleSource implements TupleSource {
         requireHead();
         return reverse.getOrDefault(new Rev(subject, rel), Set.of()).stream()
                 .filter(obj -> obj.type().equals(type))
-                .sorted(java.util.Comparator.comparing(ObjectRef::id, facet.core.eval.Keys.ORDER));
+                .sorted(java.util.Comparator.comparing(ObjectRef::id, facet.core.sem.Keys.ORDER));
     }
 
     /**

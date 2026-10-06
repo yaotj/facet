@@ -1,7 +1,7 @@
 package facet.store.memory;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Schema;
+import facet.core.schema.Schema;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Perm;
 import facet.core.ir.Rel;

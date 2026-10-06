@@ -9,6 +9,14 @@ import facet.core.ir.SubjectRef;
 import facet.core.spi.AttrSource;
 import facet.core.spi.Fanout;
 import facet.core.spi.TupleSource;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.Decision;
+import facet.core.runtime.Explain;
+import facet.core.runtime.EvalException;
+import facet.core.sem.Conds;
+import facet.core.schema.Schema;
+import facet.core.spi.decorators.PrefetchedAttrs;
+import facet.core.runtime.Memo;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;

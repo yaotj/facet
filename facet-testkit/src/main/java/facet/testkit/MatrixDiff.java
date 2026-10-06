@@ -1,6 +1,6 @@
 package facet.testkit;
 
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Rel;
 import facet.core.ir.SubjectRef;

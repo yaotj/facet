@@ -5,6 +5,7 @@ import facet.core.ir.Cond;
 import facet.core.ir.ObjectType;
 import facet.core.ir.Perm;
 import facet.core.ir.Rel;
+import facet.core.schema.Schema;
 
 import java.util.HashSet;
 import java.util.LinkedHashSet;

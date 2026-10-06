@@ -1,8 +1,8 @@
 package facet.store.pg;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.Explains;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.Explains;
 import facet.core.eval.Planner;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;

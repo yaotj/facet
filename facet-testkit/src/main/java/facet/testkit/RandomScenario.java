@@ -1,6 +1,6 @@
 package facet.testkit;
 
-import facet.core.eval.Schema;
+import facet.core.schema.Schema;
 import facet.core.ir.AttrKey;
 import facet.core.ir.Cond;
 import facet.core.ir.ObjectRef;

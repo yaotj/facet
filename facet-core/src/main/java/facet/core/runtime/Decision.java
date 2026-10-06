@@ -1,4 +1,4 @@
-package facet.core.eval;
+package facet.core.runtime;
 
 /** 判定结果：结论 + 判定树。两者一起返回，因为"为什么"和"是不是"同等重要。 */
 public record Decision(boolean allowed, Explain explain) {

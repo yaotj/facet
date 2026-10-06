@@ -1,6 +1,6 @@
 package facet.store.pg;
 
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;

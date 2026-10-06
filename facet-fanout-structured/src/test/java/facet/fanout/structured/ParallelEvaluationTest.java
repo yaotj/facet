@@ -1,8 +1,8 @@
 package facet.fanout.structured;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.Explains;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.Explains;
 import facet.core.spi.Fanout;
 import facet.store.memory.MemoryAttrSource;
 import facet.store.memory.MemoryTupleSource;

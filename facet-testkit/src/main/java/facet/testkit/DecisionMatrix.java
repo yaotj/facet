@@ -1,8 +1,8 @@
 package facet.testkit;
 
-import facet.core.eval.Ctx;
-import facet.core.eval.Decision;
-import facet.core.eval.Explains;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.Decision;
+import facet.core.runtime.Explains;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Rel;

@@ -1,8 +1,8 @@
 package facet.store.memory;
 
-import facet.core.eval.Conds;
-import facet.core.eval.Ctx;
-import facet.core.eval.Keys;
+import facet.core.sem.Conds;
+import facet.core.runtime.Ctx;
+import facet.core.sem.Keys;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;

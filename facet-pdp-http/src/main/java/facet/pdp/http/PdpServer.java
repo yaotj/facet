@@ -1,19 +1,8 @@
 package facet.pdp.http;
 
-import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.DeadlineExceededException;
-import facet.core.eval.EvalException;
-import facet.core.eval.Expander;
-import facet.core.eval.Explains;
-import facet.core.eval.Planner;
-import facet.core.eval.Schema;
-import facet.core.eval.SchemaException;
-import facet.core.eval.Validator;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
@@ -21,14 +10,15 @@ import facet.core.ir.Perm;
 import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
-import facet.core.ir.Tuple;
-import facet.core.ir.TupleFilter;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.Explains;
+import facet.core.schema.Schema;
+import facet.core.schema.Validator;
 import facet.core.spi.AttrSource;
-import facet.core.spi.HistoryTruncatedException;
 import facet.core.spi.Metrics;
 import facet.core.spi.PlanExecutor;
-import facet.core.spi.StorageException;
 import facet.core.spi.TupleSource;
+import facet.pdp.http.ports.Policy;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -63,6 +53,10 @@ import java.util.concurrent.Executors;
  *   <li><strong>对外脱敏、对内留痕。</strong>500 的响应体不带细节（错误消息可能含元组内容），
  *       但异常栈必须落日志，否则编程错误在服务端毫无痕迹。</li>
  * </ul>
+ *
+ * <p>本类只负责<strong>路由、编排与装配</strong>：把 HTTP 请求解析成内核调用、把结果装回响应。
+ * 线格式映射在 {@link WireCodec}、异常到状态码的映射在 {@link HttpErrorMapper}、缓存与坐标
+ * 陈旧策略在 {@link DecisionCachePolicy}、四个求值器的装配在 {@link Policy}——各管各的，互不打扰。
  */
 public final class PdpServer implements AutoCloseable {
 
@@ -255,17 +249,16 @@ public final class PdpServer implements AutoCloseable {
     private final HttpServer server;
     private final ExecutorService executor;
     private final Config config;
-    /** 当前生效的策略。整体替换而不是逐字段改，在途请求要么全看旧的要么全看新的。 */
+    /** 当前生效的策略：schema 与由它派生的四个求值器。整体替换而不是逐字段改，在途请求要么全看旧的要么全看新的。 */
     private volatile Policy policy;
-    /** 钉住的坐标水位。volatile 就够：过期重取是幂等的，多取一次只是多一次水位查询。 */
-    private volatile Pinned pinned;
-
-    /** schema 与由它派生的四个求值器。必须同时替换，否则会用新 schema 配旧 Planner。 */
-    private record Policy(Schema schema, Checker checker, Planner planner, Expander expander) {}
+    /** 缓存键计算与坐标陈旧钉点，依赖配置里的可选能力，自身维护钉点水位。 */
+    private final DecisionCachePolicy cachePolicy;
 
     private PdpServer(Config config) throws IOException {
         this.config = config;
-        this.policy = policyOf(config.schema());
+        this.policy = Policy.of(config.schema(), config.tuples(), config.attrs());
+        this.cachePolicy = new DecisionCachePolicy(config.extras().cache(),
+                config.extras().revisions(), config.extras().staleness());
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
         this.server = HttpServer.create(new InetSocketAddress(config.port()), 0);
         server.setExecutor(executor);
@@ -300,13 +293,6 @@ public final class PdpServer implements AutoCloseable {
         server.createContext("/v1/healthz", PdpServer::healthz);
     }
 
-    private Policy policyOf(Schema schema) {
-        return new Policy(schema,
-                new Checker(schema, config.tuples(), config.attrs()),
-                new Planner(schema, config.tuples().caps()),
-                new Expander(schema, config.tuples(), config.attrs()));
-    }
-
     /**
      * 换掉当前生效的策略。
      *
@@ -317,7 +303,7 @@ public final class PdpServer implements AutoCloseable {
      */
     public void reload(Schema schema) {
         Validator.validate(schema);
-        policy = policyOf(schema);
+        policy = Policy.of(schema, config.tuples(), config.attrs());
         config.extras().cache().clear();
     }
 
@@ -354,13 +340,13 @@ public final class PdpServer implements AutoCloseable {
 
     private Object check(HttpExchange exchange, byte[] body) throws IOException {
         var request = JSON.readValue(body, Wire.CheckRequest.class);
-        var subject = subject(request.subject());
-        var object = ref(request.object());
+        var subject = WireCodec.subject(request.subject());
+        var object = WireCodec.ref(request.object());
         var relation = new Rel(request.relation());
         boolean wantExplain = config.exposeExplain() && "true".equals(query(exchange, "explain"));
 
-        var at = resolveAt(request.at());
-        var key = cacheKey(subject, object, relation, at, request.context(), wantExplain);
+        var at = cachePolicy.resolveAt(request.at());
+        var key = cachePolicy.cacheKey(subject, object, relation, at, request.context(), wantExplain);
         if (key != null) {
             var hit = config.extras().cache().get(key);
             if (hit != null) {
@@ -397,17 +383,17 @@ public final class PdpServer implements AutoCloseable {
                     "单次批量判定最多 " + config.maxPageSize() + " 个对象，收到 "
                             + request.objects().size());
         }
-        var subject = subject(request.subject());
+        var subject = WireCodec.subject(request.subject());
         var relation = new Rel(request.relation());
-        var at = resolveAt(request.at());
+        var at = cachePolicy.resolveAt(request.at());
 
         var order = new ArrayList<ObjectRef>(request.objects().size());
-        request.objects().forEach(wire -> order.add(ref(wire)));
+        request.objects().forEach(wire -> order.add(WireCodec.ref(wire)));
 
         var answers = new LinkedHashMap<ObjectRef, Boolean>();
         var pending = new ArrayList<ObjectRef>();
         for (var object : order) {
-            var key = cacheKey(subject, object, relation, at, request.context(), false);
+            var key = cachePolicy.cacheKey(subject, object, relation, at, request.context(), false);
             var hit = key == null ? null : config.extras().cache().get(key);
             if (hit == null) {
                 pending.add(object);
@@ -422,7 +408,7 @@ public final class PdpServer implements AutoCloseable {
                     () -> policy.checker().checkAll(pending, relation));
             decisions.forEach((object, decision) -> {
                 answers.put(object, decision.allowed());
-                var key = cacheKey(subject, object, relation, at, request.context(), false);
+                var key = cachePolicy.cacheKey(subject, object, relation, at, request.context(), false);
                 if (key != null) {
                     config.extras().cache().put(key, decision.allowed());
                 }
@@ -435,50 +421,8 @@ public final class PdpServer implements AutoCloseable {
         return new Wire.BulkCheckResponse(results);
     }
 
-    /**
-     * 判定要在哪个坐标上求值。
-     *
-     * <p>请求给了坐标就用它；没给则看是否配置了陈旧窗口——配了就钉到一个刷新过的水位上。
-     * 钉住的坐标同时是缓存键与求值坐标，两者必须一致，否则缓存里存的是另一个世界的答案。
-     */
-    private Revision resolveAt(Long requested) {
-        if (requested != null) {
-            return new Revision(requested);
-        }
-        if (config.extras().staleness().isZero()) {
-            return Revision.HEAD;
-        }
-        var snapshot = pinned;
-        long now = System.nanoTime();
-        if (snapshot != null && now - snapshot.nanos() < config.extras().staleness().toNanos()) {
-            return snapshot.revision();
-        }
-        var fresh = config.extras().revisions().head();
-        if (fresh.isHead()) {
-            return Revision.HEAD;
-        }
-        pinned = new Pinned(fresh, now);
-        return fresh;
-    }
-
-    /** @return 缓存键；不可缓存时返回 {@code null} */
-    private DecisionCache.Key cacheKey(SubjectRef subject, ObjectRef object, Rel relation,
-                                       Revision at, Map<String, Object> contextAttrs,
-                                       boolean wantExplain) {
-        if (config.extras().cache() == DecisionCache.NONE || at.isHead() || wantExplain) {
-            return null;
-        }
-        if (contextAttrs != null && !contextAttrs.isEmpty()) {
-            // 判定依赖请求自带的属性：塞进键会让键空间爆炸，不塞进去就是缓存污染
-            return null;
-        }
-        return new DecisionCache.Key(subject, object, relation, at);
-    }
-
-    /** 钉住的坐标水位。 */
-    private record Pinned(Revision revision, long nanos) {}
-
-    private Object lookup(HttpExchange exchange, byte[] body) throws IOException {        var request = JSON.readValue(body, Wire.LookupRequest.class);
+    private Object lookup(HttpExchange exchange, byte[] body) throws IOException {
+        var request = JSON.readValue(body, Wire.LookupRequest.class);
         int limit = Math.min(
                 request.limit() == null ? config.maxPageSize() : Math.max(request.limit(), 1),
                 config.maxPageSize());
@@ -487,7 +431,7 @@ public final class PdpServer implements AutoCloseable {
                 new Rel(request.relation()), cursor, limit);
 
         var found = Ctx.run(
-                context(subject(request.subject()), resolveAt(request.at()), request.context()),
+                context(WireCodec.subject(request.subject()), cachePolicy.resolveAt(request.at()), request.context()),
                 () -> config.executor().execute(plan).toList());
 
         var objects = new ArrayList<Wire.Ref>(found.size());
@@ -513,13 +457,13 @@ public final class PdpServer implements AutoCloseable {
                 request.limit() == null ? config.maxPageSize() : Math.max(request.limit(), 1),
                 config.maxPageSize());
         var cursor = request.cursor() == null ? Cursor.START : new Cursor(request.cursor());
-        var object = ref(request.object());
+        var object = WireCodec.ref(request.object());
         var relation = new Rel(request.relation());
         // 展开不针对某个主体，上下文里的 principal 只是占位。用固定 id 而不是对象的 id：
         // 后者若恰好是 "*"，Principal 的构造器会拒绝，端点就会把一次正常查询报成 400
         var placeholder = new SubjectRef.Principal(object.type(), "facet-expander");
 
-        var found = Ctx.run(context(placeholder, resolveAt(request.at()), request.context()),
+        var found = Ctx.run(context(placeholder, cachePolicy.resolveAt(request.at()), request.context()),
                 () -> policy.expander().subjects(object, relation, cursor, limit));
 
         var principals = found.principals();
@@ -535,7 +479,7 @@ public final class PdpServer implements AutoCloseable {
 
     private Object write(HttpExchange exchange, byte[] body) throws IOException {
         var request = JSON.readValue(body, Wire.WriteRequest.class);
-        var revision = config.writer().apply(tuples(request.writes()), tuples(request.deletes()));
+        var revision = config.writer().apply(WireCodec.tuples(request.writes()), WireCodec.tuples(request.deletes()));
         return new Wire.WriteResponse(revision.value());
     }
 
@@ -553,18 +497,18 @@ public final class PdpServer implements AutoCloseable {
         int limit = Math.min(
                 request.limit() == null ? config.maxPageSize() : Math.max(request.limit(), 1),
                 config.maxPageSize());
-        var filter = filter(request.filter());
-        var after = request.after() == null ? null : tuple(request.after());
+        var filter = WireCodec.filter(request.filter());
+        var after = request.after() == null ? null : WireCodec.tuple(request.after());
         // 读元组不针对某个主体，上下文里的 principal 只是占位
         var placeholder = new SubjectRef.Principal(new ObjectType("_admin"), "_admin");
 
-        var found = Ctx.run(context(placeholder, resolveAt(request.at()), null),
+        var found = Ctx.run(context(placeholder, cachePolicy.resolveAt(request.at()), null),
                 () -> config.extras().admin().read(filter, after, limit));
 
         var tuples = new ArrayList<Wire.TupleJson>(found.size());
-        found.forEach(tuple -> tuples.add(json(tuple)));
+        found.forEach(tuple -> tuples.add(WireCodec.json(tuple)));
         // 只有取满一页才可能有下一页；游标就是最后一条元组本身，下次原样传回 after
-        var next = found.size() == limit ? json(found.getLast()) : null;
+        var next = found.size() == limit ? WireCodec.json(found.getLast()) : null;
         return new Wire.ReadResponse(tuples, next);
     }
 
@@ -575,7 +519,7 @@ public final class PdpServer implements AutoCloseable {
      */
     private Object deleteRelationships(HttpExchange exchange, byte[] body) throws IOException {
         var request = JSON.readValue(body, Wire.DeleteWhereRequest.class);
-        var revision = config.extras().admin().deleteWhere(filter(request.filter()));
+        var revision = config.extras().admin().deleteWhere(WireCodec.filter(request.filter()));
         return new Wire.DeleteWhereResponse(revision.value());
     }
 
@@ -585,7 +529,8 @@ public final class PdpServer implements AutoCloseable {
      * <p>要 {@code WRITE} 能力：能改 schema 比能改元组的影响面更大——前者改的是授权语义本身。
      * 解码器默认拒绝，所以这个写入面必须被显式打开。
      */
-    private Object loadSchema(HttpExchange exchange, byte[] body) {        var schema = config.extras().schemaDecoder().decode(body);
+    private Object loadSchema(HttpExchange exchange, byte[] body) {
+        var schema = config.extras().schemaDecoder().decode(body);
         reload(schema);
         int relations = schema.types().values().stream()
                 .mapToInt(type -> type.relations().size())
@@ -617,7 +562,7 @@ public final class PdpServer implements AutoCloseable {
 
         var changes = new ArrayList<Wire.ChangeJson>(page.changes().size());
         page.changes().forEach(change -> changes.add(new Wire.ChangeJson(
-                json(change.tuple()), change.created(), change.at().value())));
+                WireCodec.json(change.tuple()), change.created(), change.at().value())));
         return new Wire.WatchResponse(changes, page.nextFrom().value(), page.complete());
     }
 
@@ -698,65 +643,15 @@ public final class PdpServer implements AutoCloseable {
             byte[] body;
             try {
                 body = readBody(exchange.getRequestBody());
-            } catch (BodyTooLarge e) {
-                error(exchange, 413, "payload_too_large", e.getMessage());
+            } catch (Exception e) {
+                respond(exchange, HttpErrorMapper.map(e));
                 return;
             }
             try {
                 respond(exchange, 200, JSON.writeValueAsBytes(endpoint.apply(exchange, body)));
-            } catch (JacksonException e) {
-                // 反序列化失败是调用方的问题。它是 IOException 的子类，
-                // 不单独接住就会逃出 handle，客户端拿到的是空响应而不是 400。
-                // 线格式的必填校验抛的 IllegalArgumentException 会被 Jackson 包一层，
-                // 把它拆出来，好让调用方知道是哪个字段而不是笼统的"解析失败"。
-                var detail = e.getCause() instanceof IllegalArgumentException cause
-                        ? cause.getMessage()
-                        : "请求体无法解析";
-                error(exchange, 400, "bad_request", detail);
-            } catch (SchemaException | IllegalArgumentException e) {
-                // 策略/请求层面的错误：是调用方的问题，不是服务端故障
-                error(exchange, 400, "bad_request", e.getMessage());
-            } catch (UnsupportedOperationException e) {
-                error(exchange, 405, "not_supported", e.getMessage());
-            } catch (DeadlineExceededException e) {
-                // 504 而不是 422：期限到了说明这次"慢"，换个时刻可能就过了，重试是合理的；
-                // 而 422 的语义是"这个请求本身无法求值"，网关不会重试它
-                exchange.getResponseHeaders().add("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
-                error(exchange, 504, "deadline_exceeded", "判定超过请求期限");
-            } catch (EvalException e) {
-                error(exchange, 422, "cannot_evaluate", e.getMessage());
-            } catch (HistoryTruncatedException e) {
-                // 409 而不是 400：错的不是这次请求的参数，而是<strong>客户端的状态与服务端不再
-                // 一致</strong>——它落后得太多，那一段的撤销记录已经被回收掉了。正确处置是丢弃
-                // 本地缓存重新开始，而不是改参数重试。给 400 会把调用方引向"换个 from 再试"，
-                // 而任何还能返回数据的 from 都意味着它继续拿着一份缺了撤销的缓存放行已收回的权限。
-                // 消息里带上 earliest，客户端据此就能知道自己落后了多少
-                error(exchange, 409, "history_truncated",
-                        "起始坐标早于历史回收水位 " + e.earliest().value()
-                                + "：这一段的撤销记录已被删除。请丢弃本地缓存，从当前 HEAD 重新开始");
-            } catch (StorageException e) {
-                // 可重试的存储故障给 503 而不是 500：500 的语义是"服务端有 bug"，
-                // 网关和客户端不会重试；而连接断开、死锁、语句超时恰恰重试一次就好。
-                // 两者混成同一个码，调用方只能在"全都重试"和"全都不重试"之间选，两个都错。
-                LOG.log(System.Logger.Level.WARNING, "存储故障，可重试=" + e.retryable(), e);
-                if (e.retryable()) {
-                    exchange.getResponseHeaders().add("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
-                    error(exchange, 503, "storage_unavailable", "存储暂时不可用，请重试");
-                } else {
-                    error(exchange, 500, "internal_error", "判定失败");
-                }
-            } catch (RuntimeException e) {
-                // 对外脱敏（消息可能带元组内容），对内必须留痕
-                LOG.log(System.Logger.Level.ERROR, "判定失败", e);
-                error(exchange, 500, "internal_error", "判定失败");
+            } catch (Exception e) {
+                respond(exchange, HttpErrorMapper.map(e));
             }
-        }
-    }
-
-    /** 请求体超限。 */
-    private static final class BodyTooLarge extends RuntimeException {
-        BodyTooLarge(String message) {
-            super(message);
         }
     }
 
@@ -784,73 +679,6 @@ public final class PdpServer implements AutoCloseable {
         return attrs == null ? request : request.withContextAttrs(attrs);
     }
 
-    private static List<Tuple> tuples(List<Wire.TupleJson> wire) {
-        if (wire == null) {
-            return List.of();
-        }
-        var out = new ArrayList<Tuple>(wire.size());
-        for (var item : wire) {
-            out.add(tuple(item));
-        }
-        return out;
-    }
-
-    private static Tuple tuple(Wire.TupleJson item) {
-        SubjectRef subject;
-        if (SubjectRef.WILDCARD_ID.equals(item.subject().id())) {
-            // user:* → Wildcard(user)
-            subject = new SubjectRef.Wildcard(new ObjectType(item.subject().type()));
-        } else if (item.subjectRelation() == null) {
-            subject = new SubjectRef.Principal(
-                    new ObjectType(item.subject().type()), item.subject().id());
-        } else {
-            subject = new SubjectRef.Userset(ref(item.subject()), new Rel(item.subjectRelation()));
-        }
-        return new Tuple(ref(item.object()), new Rel(item.relation()), subject);
-    }
-
-    private static Wire.TupleJson json(Tuple tuple) {
-        var object = new Wire.Ref(tuple.object().type().name(), tuple.object().id());
-        return switch (tuple.subject()) {
-            case SubjectRef.Principal(var type, var id) -> new Wire.TupleJson(
-                    object, tuple.relation().name(), new Wire.Ref(type.name(), id), null);
-            case SubjectRef.Userset(var target, var relation) -> new Wire.TupleJson(
-                    object, tuple.relation().name(),
-                    new Wire.Ref(target.type().name(), target.id()), relation.name());
-            case SubjectRef.Wildcard(var type) -> new Wire.TupleJson(
-                    object, tuple.relation().name(),
-                    new Wire.Ref(type.name(), SubjectRef.WILDCARD_ID), null);
-        };
-    }
-
-    /**
-     * 线格式的筛选条件转内核形状。
-     *
-     * <p>走规范构造器而不是那些工厂方法：工厂方法各自钉住了特定字段（"某个对象上的全部"、
-     * "某个主体的全部"），而线格式允许任意子集，包括只给 {@code type} 不给 {@code id}。
-     * {@code null} 一路保留为"任意"，空白串则会被 {@code TupleFilter} 挡掉——
-     * 那正是我们想要的：把空串当成"任意"是个安静的灾难。
-     */
-    private static TupleFilter filter(Wire.TupleFilterJson wire) {
-        var object = wire.object();
-        var subject = wire.subject();
-        return new TupleFilter(
-                object == null || object.type() == null ? null : new ObjectType(object.type()),
-                object == null ? null : object.id(),
-                wire.relation() == null ? null : new Rel(wire.relation()),
-                subject == null || subject.type() == null ? null : new ObjectType(subject.type()),
-                subject == null ? null : subject.id(),
-                wire.subjectRelation() == null ? null : new Rel(wire.subjectRelation()));
-    }
-
-    private static SubjectRef subject(Wire.Ref wire) {
-        return new SubjectRef.Principal(new ObjectType(wire.type()), wire.id());
-    }
-
-    private static ObjectRef ref(Wire.Ref wire) {
-        return new ObjectRef(new ObjectType(wire.type()), wire.id());
-    }
-
     private static String query(HttpExchange exchange, String name) {
         var raw = exchange.getRequestURI().getQuery();
         if (raw == null) {
@@ -868,6 +696,13 @@ public final class PdpServer implements AutoCloseable {
     private static void error(HttpExchange exchange, int status, String code, String message)
             throws IOException {
         respond(exchange, status, JSON.writeValueAsBytes(new Wire.ErrorResponse(code, message)));
+    }
+
+    private static void respond(HttpExchange exchange, HttpErrorMapper.Action action) throws IOException {
+        if (action.retryAfter()) {
+            exchange.getResponseHeaders().add("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
+        }
+        error(exchange, action.status(), action.code(), action.message());
     }
 
     private static void respond(HttpExchange exchange, int status, byte[] body) throws IOException {

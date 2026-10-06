@@ -1,9 +1,9 @@
 package facet.store.memory;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.eval.Planner;
-import facet.core.eval.Validator;
+import facet.core.schema.Validator;
 import facet.core.ir.Cursor;
 import facet.core.ir.Perm;
 import facet.core.ir.Plan;
@@ -11,7 +11,7 @@ import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.ir.Tuple;
 import facet.testkit.DecisionMatrix;
-import facet.core.eval.Explains;
+import facet.core.runtime.Explains;
 import facet.testkit.Golden;
 import org.junit.jupiter.api.Test;
 

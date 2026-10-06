@@ -2,8 +2,8 @@ package facet.store.memory;
 
 import facet.core.eval.Attrs;
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.PrefetchedAttrs;
+import facet.core.runtime.Ctx;
+import facet.core.spi.decorators.PrefetchedAttrs;
 import facet.core.ir.AttrKey;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Tuple;

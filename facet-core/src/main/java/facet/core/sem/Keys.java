@@ -1,4 +1,4 @@
-package facet.core.eval;
+package facet.core.sem;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;

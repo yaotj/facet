@@ -1,6 +1,6 @@
 package facet.store.pg;
 
-import facet.core.eval.Conds;
+import facet.core.sem.Conds;
 import facet.core.ir.AttrKey;
 import facet.core.ir.Cond;
 import facet.core.ir.Plan;

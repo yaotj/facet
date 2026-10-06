@@ -1,6 +1,6 @@
 package facet.store.pg;
 
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.ObjectType;
 import facet.core.ir.Rel;
@@ -65,6 +65,6 @@ final class Rows {
      * 跨适配器一致性的基准，复制一份就意味着内核改规则时这里不会跟着变。
      */
     static String text(Object value) {
-        return facet.core.eval.Conds.text(value);
+        return facet.core.sem.Conds.text(value);
     }
 }

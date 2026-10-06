@@ -1,6 +1,6 @@
 package facet.pdp.http;
 
-import facet.core.eval.Schema;
+import facet.core.schema.Schema;
 
 /**
  * schema 解码器。

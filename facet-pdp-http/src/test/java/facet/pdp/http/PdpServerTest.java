@@ -1,6 +1,6 @@
 package facet.pdp.http;
 
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;

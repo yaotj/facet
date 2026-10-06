@@ -1,9 +1,9 @@
 package facet.store.memory;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.EvalException;
-import facet.core.eval.Explains;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.EvalException;
+import facet.core.runtime.Explains;
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Tuple;
 import org.junit.jupiter.api.Test;

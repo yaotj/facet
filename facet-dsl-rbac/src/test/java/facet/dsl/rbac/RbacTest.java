@@ -1,7 +1,7 @@
 package facet.dsl.rbac;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
+import facet.core.runtime.Ctx;
 import facet.core.eval.Planner;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;
@@ -35,7 +35,7 @@ class RbacTest {
     private static final Rel READ = new Rel("read");
     private static final Rel DELETE = new Rel("delete");
 
-    private final facet.core.eval.Schema schema = Rbac.on("doc")
+    private final facet.core.schema.Schema schema = Rbac.on("doc")
             .roles("viewer", "editor", "admin")
             .inherits("editor", "viewer")
             .inherits("admin", "editor")

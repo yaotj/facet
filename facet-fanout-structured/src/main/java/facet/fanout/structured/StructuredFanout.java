@@ -1,7 +1,7 @@
 package facet.fanout.structured;
 
-import facet.core.eval.Ctx;
-import facet.core.eval.DeadlineExceededException;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.DeadlineExceededException;
 import facet.core.spi.Fanout;
 
 import java.time.Duration;

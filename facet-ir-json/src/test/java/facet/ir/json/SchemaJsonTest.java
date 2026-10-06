@@ -1,8 +1,8 @@
 package facet.ir.json;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.Schema;
+import facet.core.runtime.Ctx;
+import facet.core.schema.Schema;
 import facet.core.ir.AttrKey;
 import facet.core.ir.Cond;
 import facet.core.ir.ObjectRef;
@@ -120,7 +120,7 @@ class SchemaJsonTest {
                       "right":{"lit":true}}}}}}}""";
 
         // EXTERNAL 属性挂在声明可反查的路径上
-        assertThrows(facet.core.eval.SchemaException.class, () -> SchemaJson.decode(json));
+        assertThrows(facet.core.schema.SchemaException.class, () -> SchemaJson.decode(json));
     }
 
     @Test

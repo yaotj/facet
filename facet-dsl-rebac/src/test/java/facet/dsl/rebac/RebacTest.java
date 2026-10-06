@@ -1,6 +1,6 @@
 package facet.dsl.rebac;
 
-import facet.core.eval.SchemaException;
+import facet.core.schema.SchemaException;
 import facet.core.ir.AttrKey;
 import facet.core.ir.Cond;
 import facet.testkit.FolderScenario;

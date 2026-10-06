@@ -8,6 +8,12 @@ import facet.core.ir.Rel;
 import facet.core.ir.SubjectRef;
 import facet.core.spi.AttrSource;
 import facet.core.spi.TupleSource;
+import facet.core.sem.Conds;
+import facet.core.sem.Keys;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.Memo;
+import facet.core.schema.Schema;
+import facet.core.runtime.EvalException;
 
 import java.util.Comparator;
 import java.util.LinkedHashSet;

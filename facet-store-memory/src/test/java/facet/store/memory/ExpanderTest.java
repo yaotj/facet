@@ -1,8 +1,8 @@
 package facet.store.memory;
 
 import facet.core.eval.Checker;
-import facet.core.eval.Ctx;
-import facet.core.eval.EvalException;
+import facet.core.runtime.Ctx;
+import facet.core.runtime.EvalException;
 import facet.core.eval.Expander;
 import facet.core.ir.Cursor;
 import facet.core.ir.ObjectRef;

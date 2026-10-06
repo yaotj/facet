@@ -6,6 +6,9 @@ import facet.core.ir.Perm;
 import facet.core.ir.Plan;
 import facet.core.ir.Rel;
 import facet.core.spi.TupleSource;
+import facet.core.schema.SchemaException;
+import facet.core.runtime.EvalException;
+import facet.core.schema.Schema;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;

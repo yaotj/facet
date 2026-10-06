@@ -4,6 +4,8 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.function.Predicate;
 
+import facet.core.spi.decorators.SequentialFanout;
+
 /**
  * 扇出端口。
  *

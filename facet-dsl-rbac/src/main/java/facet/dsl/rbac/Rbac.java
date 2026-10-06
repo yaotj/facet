@@ -1,7 +1,7 @@
 package facet.dsl.rbac;
 
-import facet.core.eval.Schema;
-import facet.core.eval.Validator;
+import facet.core.schema.Schema;
+import facet.core.schema.Validator;
 import facet.core.ir.ObjectType;
 import facet.core.ir.Perm;
 import facet.core.ir.Rel;

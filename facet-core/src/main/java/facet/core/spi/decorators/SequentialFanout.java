@@ -1,14 +1,16 @@
-package facet.core.spi;
+package facet.core.spi.decorators;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.function.Predicate;
 
+import facet.core.spi.Fanout;
+
 /**
- * {@link Fanout#SEQUENTIAL} 的实现。故意不公开：并行实现走独立模块。
+ * {@link Fanout#SEQUENTIAL} 的实现。并行实现走独立模块。
  */
-final class SequentialFanout implements Fanout {
+public final class SequentialFanout implements Fanout {
 
     /** 串行下不存在"部分完成"：任一分支抛出就直接冒泡，{@code AllOf} 绝不会拿到一份残缺的结果集。 */
     @Override

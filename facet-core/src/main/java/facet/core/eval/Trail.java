@@ -2,6 +2,11 @@ package facet.core.eval;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
+import facet.core.runtime.DeadlineExceededException;
+import facet.core.runtime.EvalException;
+import facet.core.runtime.Deadline;
+import facet.core.runtime.Memo;
+
 /**
  * 求值路径：从根到当前节点的 (perm, obj) 链，外加整棵遍历共用的工作预算与墙钟期限。
  *
