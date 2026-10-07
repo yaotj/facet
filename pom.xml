@@ -144,6 +144,9 @@
         <!-- driving 适配器 -->
         <subproject>facet-pdp-http</subproject>
 
+        <!-- 驱动侧第二种形态：进程内判定门面（不依赖 HTTP） -->
+        <subproject>facet-sdk</subproject>
+
         <!-- 判定矩阵 golden file 的测试基建 -->
         <subproject>facet-testkit</subproject>
 
