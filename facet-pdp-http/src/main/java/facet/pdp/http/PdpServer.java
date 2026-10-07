@@ -31,8 +31,10 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.Function;
 
 /**
  * HTTP 决策点。
@@ -55,7 +57,8 @@ import java.util.concurrent.Executors;
  * </ul>
  *
  * <p>本类只负责<strong>路由、编排与装配</strong>：把 HTTP 请求解析成内核调用、把结果装回响应。
- * 线格式映射在 {@link WireCodec}、异常到状态码的映射在 {@link HttpErrorMapper}、缓存与坐标
+ * 路由注册表在 {@link #routes()}（每条路由声明路径、方法、所需能力与端点，统一由 {@link #dispatch}
+ * 派发）、线格式映射在 {@link WireCodec}、异常到状态码的映射在 {@link HttpErrorMapper}、缓存与坐标
  * 陈旧策略在 {@link DecisionCachePolicy}、四个求值器的装配在 {@link Policy}——各管各的，互不打扰。
  */
 public final class PdpServer implements AutoCloseable {
@@ -262,35 +265,45 @@ public final class PdpServer implements AutoCloseable {
         this.executor = Executors.newVirtualThreadPerTaskExecutor();
         this.server = HttpServer.create(new InetSocketAddress(config.port()), 0);
         server.setExecutor(executor);
-        server.createContext("/v1/check",
-                exchange -> handle(exchange, Authenticator.Scope.READ, this::check));
-        server.createContext("/v1/check-bulk",
-                exchange -> handle(exchange, Authenticator.Scope.READ, this::checkBulk));
-        server.createContext("/v1/lookup-resources",
-                exchange -> handle(exchange, Authenticator.Scope.READ, this::lookup));
-        server.createContext("/v1/lookup-subjects",
-                exchange -> handle(exchange, Authenticator.Scope.READ, this::lookupSubjects));
-        server.createContext("/v1/relationships",
-                exchange -> handle(exchange, Authenticator.Scope.WRITE, this::write));
-        // jdk.httpserver 按最长前缀派发，这两条更具体的路径会盖过上面的 /v1/relationships；
-        // 读用 READ 能力、删用 WRITE，与其它端点的读写分权保持一致
-        server.createContext("/v1/relationships/read",
-                exchange -> handle(exchange, Authenticator.Scope.READ, this::readRelationships));
-        server.createContext("/v1/relationships/delete",
-                exchange -> handle(exchange, Authenticator.Scope.WRITE, this::deleteRelationships));
-        server.createContext("/v1/watch",
-                exchange -> handle(exchange, Authenticator.Scope.READ, this::watch));
-        // 唯一一条按方法分派的路径：GET 读回当前策略轮廓（READ），POST 下发新策略（WRITE）。
-        // 分派写在这里而不是放进 handle，是为了让"只有这一条路放开了 GET"在注册表上一眼看得见；
-        // 鉴权、请求体上限、错误映射全部仍由 handle 承担，两个分支各自只多传一个允许的方法
-        server.createContext("/v1/schema", exchange -> {
-            if ("GET".equals(exchange.getRequestMethod())) {
-                handle(exchange, "GET", Authenticator.Scope.READ, this::viewSchema);
-            } else {
-                handle(exchange, Authenticator.Scope.WRITE, this::loadSchema);
-            }
-        });
+        // 路由注册表：每条路由声明路径、允许的方法、所需能力与端点。新增一个端点只需往
+        // routes() 里加一行，方法校验与鉴权由统一的 dispatch 承担，不会再散落到九处重复注册里。
+        // jdk.httpserver 按最长前缀派发，所以 /v1/relationships 与更具体的 read/delete 子路径
+        // 各自是注册表里独立的一行，互不干扰
+        for (var route : routes()) {
+            server.createContext(route.path(), exchange -> dispatch(exchange, route));
+        }
+        // 存活探针不走鉴权、不读请求体、不映射异常：它的契约与其它端点根本不同，单独注册而不是
+        // 硬塞进注册表，免得给探针也套上一层它永远用不到的鉴权与错误映射
         server.createContext("/v1/healthz", PdpServer::healthz);
+    }
+
+    /**
+     * 路由表。
+     *
+     * <p>每条路由声明：路径、允许的方法、对该方法授权所需的能力、以及处理端点。绝大多数端点
+     * 只接受 {@code POST} 且用 {@code READ} 能力；写端点（{@code /v1/relationships}、
+     * {@code /v1/relationships/delete}）用 {@code WRITE}。{@code /v1/schema} 是唯一按方法分权的
+     * 路由：{@code GET} 读回当前策略轮廓（{@code READ}）、{@code POST} 下发新策略（{@code WRITE}）——
+     * jdk.httpserver 在同一路径上只能注册一个 handler，所以方法分支留在 {@code resolve} 里，
+     * 但范围与端点仍在这张表上声明，"只有这一条路放开了 GET"一眼可见。
+     */
+    private List<Route> routes() {
+        var read = Authenticator.Scope.READ;
+        var write = Authenticator.Scope.WRITE;
+        return List.of(
+                Route.of("/v1/check", read, this::check),
+                Route.of("/v1/check-bulk", read, this::checkBulk),
+                Route.of("/v1/lookup-resources", read, this::lookup),
+                Route.of("/v1/lookup-subjects", read, this::lookupSubjects),
+                Route.of("/v1/relationships", write, this::write),
+                Route.of("/v1/relationships/read", read, this::readRelationships),
+                Route.of("/v1/relationships/delete", write, this::deleteRelationships),
+                Route.of("/v1/watch", read, this::watch),
+                // 按方法分权：GET 读轮廓、POST 下发。resolve 按方法来选范围与端点
+                new Route("/v1/schema", Set.of("GET", "POST"),
+                        method -> "GET".equals(method)
+                                ? new Route.ScopeAndEndpoint(read, this::viewSchema)
+                                : new Route.ScopeAndEndpoint(write, this::loadSchema)));
     }
 
     /**
@@ -613,28 +626,52 @@ public final class PdpServer implements AutoCloseable {
 
     // ---- 管道 ----
 
+    /** 一个端点的处理入口：拿到已通过鉴权与读体的请求，返回要序列化的结果。 */
     @FunctionalInterface
     private interface Endpoint {
         Object apply(HttpExchange exchange, byte[] body) throws IOException;
     }
 
-    /** 绝大多数端点只接受 {@code POST}：它们都带请求体，而且不少是写操作。 */
-    private void handle(HttpExchange exchange, Authenticator.Scope scope, Endpoint endpoint)
-            throws IOException {
-        handle(exchange, "POST", scope, endpoint);
+    /**
+     * 一条路由定义。
+     *
+     * <p>{@code resolve} 按请求方法选出该路由在该方法下授权所需的 {@link Authenticator.Scope} 与
+     * {@link Endpoint}。绝大多数路由只接受 {@code POST}、范围与端点恒定（见 {@link #of}）；
+     * {@code /v1/schema} 按 {@code GET}/{@code POST} 选不同范围与端点，所以用完整构造器。
+     */
+    private record Route(String path, Set<String> methods,
+                         Function<String, Route.ScopeAndEndpoint> resolve) {
+        /** 该路由在某方法下授权所需的能力与处理端点。 */
+        record ScopeAndEndpoint(Authenticator.Scope scope, Endpoint endpoint) {}
+
+        /** 最常见的端点：只接受 {@code POST}，范围与端点恒定。 */
+        static Route of(String path, Authenticator.Scope scope, Endpoint endpoint) {
+            return new Route(path, Set.of("POST"), _ -> new ScopeAndEndpoint(scope, endpoint));
+        }
     }
 
     /**
-     * @param method 该端点允许的唯一方法。做成参数而不是"放开一组方法"：允许的方法一多，
-     *               鉴权能力就得跟着方法分叉，而那个分叉一旦出错就是读凭据拿到了写权限
+     * 统一派发：先校验方法（不在该路由允许集合内即 405），再按方法解析出范围与端点交给
+     * {@link #handle}。方法校验收口在这里而不是每个端点里，否则九个端点就要各写一遍同样的 405。
      */
-    private void handle(HttpExchange exchange, String method, Authenticator.Scope scope,
-                        Endpoint endpoint) throws IOException {
+    private void dispatch(HttpExchange exchange, Route route) throws IOException {
+        if (!route.methods().contains(exchange.getRequestMethod())) {
+            error(exchange, 405, "method_not_allowed", "只接受 " + route.methods());
+            return;
+        }
+        var target = route.resolve().apply(exchange.getRequestMethod());
+        handle(exchange, target.scope(), target.endpoint());
+    }
+
+    /**
+     * 一个端点的统一管道：鉴权、读有上限的请求体、跑端点、把异常映射成状态码。
+     *
+     * @param scope 该端点要求的能力。做成参数而不是"放开一组方法"：允许的方法一多，
+     *              鉴权能力就得跟着方法分叉，而那个分叉一旦出错就是读凭据拿到了写权限
+     */
+    private void handle(HttpExchange exchange, Authenticator.Scope scope, Endpoint endpoint)
+            throws IOException {
         try (exchange) {
-            if (!method.equals(exchange.getRequestMethod())) {
-                error(exchange, 405, "method_not_allowed", "只接受 " + method);
-                return;
-            }
             if (!config.authenticator().allows(
                     exchange.getRequestHeaders().getFirst("Authorization"), scope)) {
                 error(exchange, 401, "unauthorized", "凭据无效或权限不足");

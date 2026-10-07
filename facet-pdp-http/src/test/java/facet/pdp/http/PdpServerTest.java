@@ -81,6 +81,36 @@ class PdpServerTest {
         assertEquals(405, connection.getResponseCode());
     }
 
+    /**
+     * 路由注册表按"允许的方法集合"校验：不在集合里的方法一律 405。
+     *
+     * <p>这条锁的是注册表本身——{@code /v1/check} 只声明了 POST，PUT 这种不在集合里的方法
+     * 也必须被挡在 405，而不是落到某个端点上。此前九个端点各自注册、方法校验散落，重构后统一收口
+     * 在 dispatch 里，这条用例确保收口没把"未知方法"放进来。
+     */
+    @Test
+    void unknownMethodOnPostOnlyRouteIsRejected() throws IOException {
+        var connection = open("/v1/check");
+        connection.setRequestMethod("PUT");
+        connection.setRequestProperty("Authorization", TOKEN);
+
+        assertEquals(405, connection.getResponseCode());
+    }
+
+    /**
+     * schema 路由的方法集合是 {@code GET, POST}：别的任何方法也要 405。
+     *
+     * <p>这条锁的是"按方法分权"那一行——GET 读轮廓、POST 下发，二者之外的方法绝不能进。
+     */
+    @Test
+    void schemaRejectsUnknownMethod() throws IOException {
+        var connection = open("/v1/schema");
+        connection.setRequestMethod("PUT");
+        connection.setRequestProperty("Authorization", TOKEN);
+
+        assertEquals(405, connection.getResponseCode());
+    }
+
     @Test
     void checkFollowsTheHierarchy() throws IOException {
         assertTrue(post("/v1/check", checkBody("alice", "deep"), TOKEN).body().contains("\"allowed\":true"));

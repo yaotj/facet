@@ -12,7 +12,7 @@
     <parent>
         <groupId>io.github.yaotj</groupId>
         <artifactId>facet-parent</artifactId>
-        <version>2.0.0</version>
+        <version>3.0.0</version>
     </parent>
 
     <artifactId>facet-testkit</artifactId>

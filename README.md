@@ -5,7 +5,7 @@ Java 25 的授权内核。把"这个人能不能做这件事"从业务代码里�
 不是框架，没有运行时依赖。内核模块 `facet-core` 的 `module-info.java` 里一个 `requires` 都没有。
 
 ```
-io.github.yaotj:facet-core:2.0.0
+io.github.yaotj:facet-core:3.0.0
 ```
 
 ## 它解决什么
@@ -225,10 +225,10 @@ mvn test -Dfacet.golden.update=true  # 重新生成 SQL / explain 的 golden 基
 
 ## 状态
 
-`2.0.0`，已发布到 Maven Central（首个发布版为 1.0.0）。
+`3.0.0`，已发布到 Maven Central（首个发布版为 1.0.0）。
 
 发布配置已就绪（`mvn -Pcentral deploy`），剩下的是 Central 账号与 GPG 密钥这类只能由发布者本人完成的步骤。
 
 诚实地说：测试断言的是语义正确性与跨实现一致性，但"手写 schema 啰嗦不啰嗦"、"`Ctx.run` 包在业务代码里别不别扭"这类问题只有真实接入才能暴露。
 
-2.0.0 是一次破坏性重排：把 1.0.0 里一个过载的 `facet.core.eval` 包按职责拆成 `schema` / `sem` / `runtime` / `spi.decorators`，`PdpServer` 也拆出了 `WireCodec` / `HttpErrorMapper` / `DecisionCachePolicy` / `ports.Policy`。之所以在首个发布版之后立刻做，是因为 README 早已承认尚无外部真实使用者——这正是做破坏性重构成本最低的时机；之后才会按语义化版本承诺跨 minor 兼容。
+3.0.0 是一次破坏性重构：用设计模式把 HTTP 层的职责进一步显式化——`PdpServer` 的九条端点注册收进一张声明式路由表（`Route` 注册表，统一由 `dispatch` 派发），异常到状态码的映射从 `instanceof` 链改为责任链（`HttpErrorMapper` 上每个异常类型一个可独立测试的处理器）。之所以在 2.0.0 之后紧接着做，是因为 README 早已承认尚无外部真实使用者——这正是做破坏性重构成本最低的时机；之后才会按语义化版本承诺跨 minor 兼容。内核的 `Perm` 仍是 `sealed interface` + 穷尽 `switch` 的解释器写法（新增算子让编译器把全部求值器一次列错），未改动。
