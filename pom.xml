@@ -20,7 +20,7 @@
 
     <groupId>io.github.yaotj</groupId>
     <artifactId>facet-parent</artifactId>
-    <version>4.1.0</version>
+    <version>4.2.0</version>
     <packaging>pom</packaging>
 
     <name>Facet</name>
@@ -146,6 +146,9 @@
 
         <!-- 驱动侧第二种形态：进程内判定门面（不依赖 HTTP） -->
         <subproject>facet-sdk</subproject>
+
+        <!-- Spring Boot 自动装配：把门面装成 Bean、配置属性接调优、@CheckAllowed 方法安全 -->
+        <subproject>facet-spring</subproject>
 
         <!-- 判定矩阵 golden file 的测试基建 -->
         <subproject>facet-testkit</subproject>

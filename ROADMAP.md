@@ -4,16 +4,16 @@
 `README.md` 的自陈一致：测试断言的是语义正确性与跨实现一致性，但「手写 schema 啰嗦不啰嗦」、
 「`Ctx.run` 包在业务代码里别不别扭」这类问题只有真实接入才暴露。
 
-当前家底（2026-10-07，4.0.0 为第一条稳定线、API 冻结）：
+当前家底（2026-10-09，4.2.0 为当前版本、4.0.0 起 API 冻结）：
 
 - 内核 `facet-core`：ACL/RBAC/ABAC/ReBAC 编译到同一份 `Perm` IR；`module-info` 零三方依赖。
-- 驱动侧：`facet-pdp-http`（HTTP 服务）+ 新增的 `facet-sdk`（进程内门面）。
+- 驱动侧：`facet-pdp-http`（HTTP 服务）+ `facet-sdk`（进程内门面）+ `facet-spring`（Spring Boot Starter）。
 - 编译前端：`facet-dsl-rebac` / `facet-dsl-rbac` / `facet-dsl-abac`（Builder 形态）。
 - 适配器：`facet-store-memory`（参考实现）、`facet-store-pg`、`facet-fanout-structured`。
 - 基建：`facet-ir-json`、`facet-testkit`、`facet-benchmark`（JMH）。
 
-**还没有**：框架集成层（Spring Boot / Quarkus）、更多存储适配（MySQL / DynamoDB / Redis）、
-conformance 测试套件、runnable 示例、多租户 namespace 示例。
+**还没有**：更多存储适配（MySQL / DynamoDB / Redis）、Quarkus 扩展、conformance 测试套件、
+runnable 示例、多租户 namespace 示例。
 
 ---
 
@@ -37,8 +37,10 @@ conformance 测试套件、runnable 示例、多租户 namespace 示例。
   - **`facet-sdk` 已接缓存（4.1.0）**：`Facet.Builder` 新增 `withCache(DecisionCache)` /
     `withStaleness(RevisionSource, Duration)`。键计算与坐标陈旧策略抽成 `facet.core.spi.DecisionCachePolicy`，
     HTTP 服务与 SDK 共用，不再各写一套；不带坐标且不配陈旧的请求不进缓存（命中不含判定树，与 PDP 一致）。
-- **Spring Boot Starter**：自动装 `Facet` Bean，把 `TupleSource` / `AttrSource` / `PlanExecutor`
-  接成配置属性，提供类型安全的判定客户端与 `@PreAuthorize` 风格的注解。
+- **Spring Boot Starter（已落地 `facet-spring`，4.2.0）**：自动装 `Facet` Bean，`Schema` 可经
+  `facet.schema-location` 从 JSON 加载；提供类型安全客户端 `FacetTemplate` 与 `@CheckAllowed`
+  方法安全注解（Spring AOP Advisor，不依赖 AspectJ 编程，仅运行时带 `aspectjweaver`）。
+  缓存（`facet.cache.*`）与方法安全开关都走配置属性。
 - **Quarkus 扩展**：同上，走 Quarkus 的 bean 发现与配置体系。
 
 ## 阶段 2 — 存储广度

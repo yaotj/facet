@@ -12,7 +12,7 @@
     <parent>
         <groupId>io.github.yaotj</groupId>
         <artifactId>facet-parent</artifactId>
-        <version>4.1.0</version>
+        <version>4.2.0</version>
     </parent>
 
     <artifactId>facet-dsl-rbac</artifactId>

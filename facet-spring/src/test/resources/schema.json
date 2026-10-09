@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "types": {
+    "user": {},
+    "doc": {
+      "view": {
+        "targets": ["user"],
+        "rewrite": { "op": "direct", "rel": "view" }
+      }
+    }
+  }
+}

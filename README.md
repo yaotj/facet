@@ -5,7 +5,7 @@ Java 25 的授权内核。把"这个人能不能做这件事"从业务代码里�
 不是框架，没有运行时依赖。内核模块 `facet-core` 的 `module-info.java` 里一个 `requires` 都没有。
 
 ```
-io.github.yaotj:facet-core:4.1.0
+io.github.yaotj:facet-core:4.2.0
 ```
 
 > **稳定性承诺（自 4.0.0 起）**：公开 API 遵循[语义化版本](https://semver.org/lang/zh-CN/)。
@@ -184,6 +184,44 @@ PdpServer.Extras.NONE
 
 状态码上区分了"能不能重试"：`422` 这个请求本身无法求值，`503` 存储暂时不可用（带 `Retry-After`），`504` 超过请求期限，`409` 变更流起点已被历史回收清掉、必须丢弃本地缓存重来。混成同一个码，网关就只能在"全都重试"和"全都不重试"之间选，两个都错。
 
+## Spring Boot Starter（可选）
+
+`facet-spring` 把 `Facet` 门面装成 Spring Boot 自动配置。依赖：
+
+```xml
+<dependency>
+    <groupId>io.github.yaotj</groupId>
+    <artifactId>facet-spring</artifactId>
+    <version>4.2.0</version>
+</dependency>
+```
+
+它做的三件事：
+
+1. **自动装配 `Facet` Bean** —— 调用方提供 `Schema`、`TupleSource`、`AttrSource` 三个 Bean
+   （`facet-store-memory` 或 `facet-store-pg` 的实现），`PlanExecutor` / `Metrics` / `RevisionSource`
+   可选。也支持 `facet.schema-location`（`classpath:` / `file:` / URL，指向一份 `facet-ir-json`
+   线格式 JSON）从配置加载 Schema，省去手写 Bean。
+2. **类型安全客户端 `FacetTemplate`** —— `isAllowed` / `check` / `checkAll` / `lookup` / `whoCan`，
+   应用直接注入即可。
+3. **方法安全 `@CheckAllowed`** —— 走 Spring AOP 的 `MethodInterceptor` + Advisor（不依赖 AspectJ 编程，
+   仅运行时带 `aspectjweaver`），与 `@PreAuthorize` 同一种落地方式：
+
+```java
+@Service
+class DocService {
+    @CheckAllowed(relation = "view", object = "#doc", subject = "#currentUser")
+    byte[] read(Document doc, String currentUser) { ... }
+}
+```
+
+`object` / `subject` 是 SpEL（参数以 `#a0`/`#a1` 暴露，带 `-parameters` 编译也可用形参名），
+可解析为 `ObjectRef` / `SubjectRef` 或 `"type:id"` 字符串；`subject` 留空则从 `SubjectResolver` Bean
+取当前主体。判定拒绝抛 `FacetAccessDeniedException`（应用自己映射成 403 等 HTTP 状态）。
+
+`facet.cache.*` 可配置判定缓存（`enabled` / `maximum-size` / `staleness`），`facet.method-security.enabled`
+开启方法安全。更多存储接入方式（MySQL / DynamoDB / Redis）见 ROADMAP 阶段 2。
+
 ## 变更流
 
 `DecisionCache` 只靠 TTL 失效的话，授权变更到生效之间有一个窗口，而那个窗口里被收回的权限仍然放行。变更流让客户端做精确失效。
@@ -207,6 +245,8 @@ facet-store-memory        内存适配器。参考实现，也是测试基线
 facet-store-pg            PostgreSQL 适配器。时效区间 + 递归 CTE
 facet-fanout-structured   并行扇出（StructuredTaskScope，预览特性）
 facet-pdp-http            HTTP PDP 参考实现
+facet-sdk                进程内判定门面：把内核包成库，不必手写 Ctx.run
+facet-spring             Spring Boot Starter：自动装配 Facet Bean、FacetTemplate、@CheckAllowed
 facet-testkit             随机场景生成、判定矩阵、golden 快照、策略变更影响分析
 ```
 
@@ -230,10 +270,13 @@ mvn test -Dfacet.golden.update=true  # 重新生成 SQL / explain 的 golden 基
 
 ## 状态
 
-`3.0.0`，已发布到 Maven Central（首个发布版为 1.0.0）。
+`4.2.0`。已发布到 Maven Central 的版本：`3.0.0`（首个发布版为 1.0.0）；**4.x 稳定线（4.0.0 起）
+尚未发布**——这是不可逆的一步，等有真实接入者再发。
 
 发布配置已就绪（`mvn -Pcentral deploy`），剩下的是 Central 账号与 GPG 密钥这类只能由发布者本人完成的步骤。
 
 诚实地说：测试断言的是语义正确性与跨实现一致性，但"手写 schema 啰嗦不啰嗦"、"`Ctx.run` 包在业务代码里别不别扭"这类问题只有真实接入才能暴露。
 
-3.0.0 是一次破坏性重构：用设计模式把 HTTP 层的职责进一步显式化——`PdpServer` 的九条端点注册收进一张声明式路由表（`Route` 注册表，统一由 `dispatch` 派发），异常到状态码的映射从 `instanceof` 链改为责任链（`HttpErrorMapper` 上每个异常类型一个可独立测试的处理器）。之所以在 2.0.0 之后紧接着做，是因为 README 早已承认尚无外部真实使用者——这正是做破坏性重构成本最低的时机；之后才会按语义化版本承诺跨 minor 兼容。内核的 `Perm` 仍是 `sealed interface` + 穷尽 `switch` 的解释器写法（新增算子让编译器把全部求值器一次列错），未改动。
+4.2.0 新增 Spring Boot Starter：`facet-spring` 自动装配 `Facet` Bean、提供 `FacetTemplate`
+类型安全客户端与 `@CheckAllowed` 方法安全，并支持 `facet.schema-location` 从 JSON 加载 Schema。
+至此阶段 1 的框架集成层（Spring）落地；Quarkus 扩展仍在路线图上。

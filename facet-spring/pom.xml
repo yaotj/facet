@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.1.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.1.0 https://maven.apache.org/xsd/maven-4.1.0.xsd">
+
+    <!--
+      与 facet-sdk 同款：显式写全坐标，发布到 Central 时源 pom 才可被标准解析器读到父坐标。
+      本模块是<strong>普通 jar（非 JPMS）</strong>：Spring Boot 自动装配跑在 classpath 上，
+      强行挂 module-info 只会把 spring-* 逼成自动模块、徒增摩擦。facet-core 等 JPMS 模块
+      在 classpath 下其 module-info 自然失效，包照常可见。
+    -->
+    <parent>
+        <groupId>io.github.yaotj</groupId>
+        <artifactId>facet-parent</artifactId>
+        <version>4.2.0</version>
+    </parent>
+
+    <artifactId>facet-spring</artifactId>
+    <name>Facet Spring Boot Starter</name>
+    <description>把 Facet 内核包成 Spring Boot 自动配置：Facet Bean、类型安全判定客户端、@CheckAllowed 方法安全</description>
+
+    <dependencyManagement>
+        <dependencies>
+            <!--
+              Spring Boot 4.1.0 这套版本都已在本地仓库（离线构建 mvn -o 可解析）。
+              spring-framework-bom 随它一起导入，但下面把 spring-context / spring-aop /
+              spring-expression 显式钉到已缓存的 7.0.9，避免 BOM 指向未缓存的补丁版。
+            -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>4.1.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- 内核门面 + IR（schema 加载用） + 驱动侧门面 -->
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-sdk</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-ir-json</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 自动装配：@AutoConfiguration / @ConditionalOnMissingBean / @EnableConfigurationProperties -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+        <!-- AOP 基础设施：@EnableAspectJAutoProxy 注册自动代理创建器，Advisor 借此套到 Bean 上 -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+            <version>7.0.9</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-aop</artifactId>
+            <version>7.0.9</version>
+        </dependency>
+        <!-- @CheckAllowed 的方法参数用 SpEL 求值（subject/object 表达式） -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-expression</artifactId>
+            <version>7.0.9</version>
+        </dependency>
+        <!-- 仅运行时需要：@EnableAspectJAutoProxy 的自动代理创建器会加载 aspectj 注解类。
+             本模块自身代码不引用 AspectJ API（方法安全走 spring-aop 的 Advisor），故 runtime 作用域。 -->
+        <dependency>
+            <groupId>org.aspectj</groupId>
+            <artifactId>aspectjweaver</artifactId>
+            <version>1.9.25.1</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- 配置元数据生成（仅编译期，可选传递） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 测试：内存适配器跑真实判定；junit 由父 pom 的 junit-bom 管理 -->
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-store-memory</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.github.yaotj</groupId>
+            <artifactId>facet-testkit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
