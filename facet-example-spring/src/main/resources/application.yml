@@ -1,0 +1,7 @@
+facet:
+  schema-location: classpath:schema.json
+  method-security:
+    enabled: true
+  cache:
+    enabled: true
+    maximum-size: 1000

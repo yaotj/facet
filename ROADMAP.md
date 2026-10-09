@@ -41,6 +41,9 @@ runnable 示例、多租户 namespace 示例。
   `facet.schema-location` 从 JSON 加载；提供类型安全客户端 `FacetTemplate` 与 `@CheckAllowed`
   方法安全注解（Spring AOP Advisor，不依赖 AspectJ 编程，仅运行时带 `aspectjweaver`）。
   缓存（`facet.cache.*`）与方法安全开关都走配置属性。
+  - **真实接入示例（已落地 `facet-example-spring`，4.2.0）**：可运行的 Spring Boot Web 应用，
+    演示组→文件夹→文档继承链上的 `@CheckAllowed` / `lookup` / `whoCan`，并暴露了两个真实接入坑：
+    userset 必须用四参 `Tuple.of`；Spring MVC 参数名绑定需要 `-parameters`（示例模块已开）。
 - **Quarkus 扩展**：同上，走 Quarkus 的 bean 发现与配置体系。
 
 ## 阶段 2 — 存储广度
@@ -59,7 +62,8 @@ runnable 示例、多租户 namespace 示例。
 
 ## 阶段 4 — 文档与示例
 
-- runnable quickstart、一个「部署 PDP」的故事、多租户 namespace 示例。
+- runnable quickstart（**部分落地**：`facet-example-spring` 已是一个可跑的示例应用；还差
+  「部署 PDP」的故事与多租户 namespace 示例）。
 
 ---
 

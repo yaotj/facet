@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "types": {
+    "user": {},
+    "folder": {
+      "viewer": {
+        "targets": ["user", "group"],
+        "rewrite": { "op": "direct", "rel": "viewer" }
+      },
+      "parent": {
+        "targets": ["folder"],
+        "rewrite": { "op": "direct", "rel": "parent" }
+      },
+      "view": {
+        "targets": ["user", "group"],
+        "listable": true,
+        "rewrite": {
+          "op": "anyOf",
+          "terms": [
+            { "op": "direct", "rel": "viewer" },
+            { "op": "through", "hop": "parent", "then": { "op": "ref", "rel": "view" } }
+          ]
+        }
+      }
+    },
+    "group": {
+      "member": {
+        "targets": ["user"],
+        "rewrite": { "op": "direct", "rel": "member" }
+      }
+    },
+    "doc": {
+      "viewer": {
+        "targets": ["user", "group"],
+        "rewrite": { "op": "direct", "rel": "viewer" }
+      },
+      "parent": {
+        "targets": ["folder"],
+        "rewrite": { "op": "direct", "rel": "parent" }
+      },
+      "view": {
+        "targets": ["user", "group"],
+        "listable": true,
+        "rewrite": {
+          "op": "anyOf",
+          "terms": [
+            { "op": "direct", "rel": "viewer" },
+            { "op": "through", "hop": "parent", "then": { "op": "ref", "rel": "view" } }
+          ]
+        }
+      }
+    }
+  }
+}

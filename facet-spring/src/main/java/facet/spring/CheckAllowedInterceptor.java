@@ -10,6 +10,7 @@ import facet.spring.annotation.CheckAllowed;
 import org.aopalliance.intercept.MethodInterceptor;
 import org.aopalliance.intercept.MethodInvocation;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.core.DefaultParameterNameDiscoverer;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
@@ -26,6 +27,8 @@ public class CheckAllowedInterceptor implements MethodInterceptor {
     private final Facet facet;
     private final ObjectProvider<SubjectResolver> resolver;
     private final ExpressionParser parser = new SpelExpressionParser();
+    private final DefaultParameterNameDiscoverer parameterNameDiscoverer =
+            new DefaultParameterNameDiscoverer();
 
     public CheckAllowedInterceptor(Facet facet, ObjectProvider<SubjectResolver> resolver) {
         this.facet = facet;
@@ -39,11 +42,20 @@ public class CheckAllowedInterceptor implements MethodInterceptor {
         if (ann == null) {
             return invocation.proceed();
         }
-        // 参数以 #a0, #a1, ... 暴露；带 -parameters 编译时还能用形参名
+        // 参数以 #a0, #a1, ... 暴露；带 -parameters 编译时（Spring Boot 默认）还能用形参名
         var ctx = new StandardEvaluationContext();
         var args = invocation.getArguments();
         for (int i = 0; i < args.length; i++) {
             ctx.setVariable("a" + i, args[i]);
+        }
+        var names = parameterNameDiscoverer.getParameterNames(method);
+        if (names != null) {
+            for (int i = 0; i < names.length && i < args.length; i++) {
+                // 只有真实的形参名值得绑定；arg0/arg1 之类由 #aN 已经覆盖
+                if (names[i] != null && !names[i].startsWith("arg")) {
+                    ctx.setVariable(names[i], args[i]);
+                }
+            }
         }
         var object = toObjectRef(eval(ann.object(), ctx));
         var subject = ann.subject().isBlank()

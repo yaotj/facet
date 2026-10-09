@@ -222,6 +222,33 @@ class DocService {
 `facet.cache.*` 可配置判定缓存（`enabled` / `maximum-size` / `staleness`），`facet.method-security.enabled`
 开启方法安全。更多存储接入方式（MySQL / DynamoDB / Redis）见 ROADMAP 阶段 2。
 
+### 真实接入示例
+
+`facet-example-spring` 是一个**可运行的 Spring Boot Web 应用**，演示三种用法如何配合：
+
+- `GET /docs/{id}` —— `@CheckAllowed` 声明式方法安全，拒绝返回 403；
+- `GET /docs` —— `FacetTemplate.lookup` 反查，列出当前用户能看的文档；
+- `GET /docs/{id}/viewers` —— `FacetTemplate.whoCan` 展开，返回能看这份文档的具体主体。
+
+数据模型是「组 → 文件夹 → 文档」的继承链：`group:eng` 的成员 alice / bob，
+经 `folder:eng` 的 viewer（组成员集合）与 `doc:readme` 的 parent 继承，能看 readme；mallory 不能。
+运行：
+
+```bash
+mvn -pl facet-example-spring -am spring-boot:run
+curl -H 'X-User: alice' localhost:8080/docs/readme     # 200
+curl -H 'X-User: mallory' localhost:8080/docs/readme   # 403
+```
+
+接入时最容易踩的两个真实坑，示例都踩过并已解决：
+
+- **userset 要用四参 `Tuple.of(object, rel, subjectObject, subjectRel)`**。三参版本表达的是
+  「主体是 group:eng 这个具体对象」，四参才表达「主体是 group:eng#member 的成员集合」——
+  前者会让 `whoCan` 把 `group:eng` 当成具体用户返回。
+- **Spring MVC 的参数名绑定需要 `-parameters` 编译**。`@CheckAllowed` 的 `object = "'doc:' + #id"`
+  依赖形参名 `#id`；示例模块已开启 `maven-compiler-plugin` 的 `<parameters>true</parameters>`。
+  `facet-spring` 拦截器用 `DefaultParameterNameDiscoverer` 读取形参名并绑定为 SpEL 变量。
+
 ## 变更流
 
 `DecisionCache` 只靠 TTL 失效的话，授权变更到生效之间有一个窗口，而那个窗口里被收回的权限仍然放行。变更流让客户端做精确失效。
@@ -247,6 +274,7 @@ facet-fanout-structured   并行扇出（StructuredTaskScope，预览特性）
 facet-pdp-http            HTTP PDP 参考实现
 facet-sdk                进程内判定门面：把内核包成库，不必手写 Ctx.run
 facet-spring             Spring Boot Starter：自动装配 Facet Bean、FacetTemplate、@CheckAllowed
+facet-example-spring     真实接入示例：可运行的 Spring Boot Web 应用（组→文件夹→文档继承链）
 facet-testkit             随机场景生成、判定矩阵、golden 快照、策略变更影响分析
 ```
 
@@ -257,7 +285,7 @@ facet-testkit             随机场景生成、判定矩阵、golden 快照、�
 需要 **JDK 25** 与 **Maven 4**（根 pom 用的是 4.1.0 模型，`<subprojects>` 与坐标推断在 Maven 3.9 上不工作）。
 
 ```bash
-mvn test        # 224+ 个用例
+mvn test        # 230+ 个用例
 ```
 
 跑 PostgreSQL 相关用例需要 Docker（testcontainers）。几个大规模用例默认跳过：
@@ -279,4 +307,6 @@ mvn test -Dfacet.golden.update=true  # 重新生成 SQL / explain 的 golden 基
 
 4.2.0 新增 Spring Boot Starter：`facet-spring` 自动装配 `Facet` Bean、提供 `FacetTemplate`
 类型安全客户端与 `@CheckAllowed` 方法安全，并支持 `facet.schema-location` 从 JSON 加载 Schema。
-至此阶段 1 的框架集成层（Spring）落地；Quarkus 扩展仍在路线图上。
+同时新增可运行的示例应用 `facet-example-spring`（组→文件夹→文档继承链的真实接入演示）。
+至此阶段 1 的框架集成层（Spring）落地，README 自陈的「只有真实接入才暴露」的 ergonomics
+问题开始有了检验载体；Quarkus 扩展仍在路线图上。

@@ -150,6 +150,9 @@
         <!-- Spring Boot 自动装配：把门面装成 Bean、配置属性接调优、@CheckAllowed 方法安全 -->
         <subproject>facet-spring</subproject>
 
+        <!-- 真实接入示例：可跑的 Spring Boot Web 应用，展示 FacetTemplate 与 @CheckAllowed -->
+        <subproject>facet-example-spring</subproject>
+
         <!-- 判定矩阵 golden file 的测试基建 -->
         <subproject>facet-testkit</subproject>
 
