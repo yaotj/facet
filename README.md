@@ -298,10 +298,21 @@ mvn test -Dfacet.golden.update=true  # 重新生成 SQL / explain 的 golden 基
 
 ## 状态
 
-`4.2.0`。已发布到 Maven Central 的版本：`3.0.0`（首个发布版为 1.0.0）；**4.x 稳定线（4.0.0 起）
-尚未发布**——这是不可逆的一步，等有真实接入者再发。
+`4.2.0`，**已发布到 Maven Central**。已发布的版本：`3.0.0`（首个发布版为 1.0.0）、`4.2.0`
+（4.x 稳定线首版，2026-10-09 发布）。
 
-发布配置已就绪（`mvn -Pcentral deploy`），剩下的是 Central 账号与 GPG 密钥这类只能由发布者本人完成的步骤。
+坐标：
+
+```xml
+<dependency>
+    <groupId>io.github.yaotj</groupId>
+    <artifactId>facet-spring</artifactId>
+    <version>4.2.0</version>
+</dependency>
+```
+
+发布链路（`mvn -Pcentral deploy` + consumer-POM 修正 + Central REST 上传）已验证可用，见
+`scripts/publish-central.sh`。
 
 诚实地说：测试断言的是语义正确性与跨实现一致性，但"手写 schema 啰嗦不啰嗦"、"`Ctx.run` 包在业务代码里别不别扭"这类问题只有真实接入才能暴露。
 
