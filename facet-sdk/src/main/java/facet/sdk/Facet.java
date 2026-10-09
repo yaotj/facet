@@ -11,15 +11,21 @@ import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
 import facet.core.runtime.Ctx;
 import facet.core.runtime.Decision;
+import facet.core.runtime.Explain;
 import facet.core.schema.Schema;
 import facet.core.schema.Validator;
 import facet.core.spi.AttrSource;
+import facet.core.spi.DecisionCache;
+import facet.core.spi.DecisionCachePolicy;
 import facet.core.spi.Metrics;
 import facet.core.spi.PlanExecutor;
+import facet.core.spi.RevisionSource;
 import facet.core.spi.TupleSource;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SequencedMap;
@@ -35,9 +41,10 @@ import java.util.SequencedMap;
  * 本类把内核包成进程内库。两者共享同一份内核，差别只在"请求从哪来"——这也是 README 自己承认的、
  * "只有真实接入才暴露"的 ergonomics 问题最直接的回应：接进应用不再需要手写 {@code Ctx.run}。
  *
- * <p>注意：本门面<strong>不含判定缓存</strong>。缓存与坐标陈旧策略的 {@code DecisionCache} /
- * {@code RevisionSource} 现已在 {@code facet.core.spi}（见 {@code ROADMAP.md} 阶段 1），HTTP 服务与
- * 进程内门面共享同一套语义；但本门面接缓存是下一步工作——在此之前，每次判定都实算。
+ * <p>本门面<strong>可选接判定缓存</strong>：用 {@code Builder.withCache} / {@code withStaleness} 注入
+ * {@code facet.core.spi} 里的 {@code DecisionCache} / {@code RevisionSource}。键计算与坐标陈旧语义与 HTTP
+ * 服务共用同一个 {@code DecisionCachePolicy}，不再各写一套。缓存命中返回的结论不含完整判定树
+ * （与 PDP 行为一致：判定树不缓存，且体积大、易失）；不带具体坐标且不配陈旧窗口的请求不进缓存。
  */
 public final class Facet {
 
@@ -51,6 +58,9 @@ public final class Facet {
     private final int maxNodes;
     private final int maxDepth;
     private final Duration deadline;
+    /** 判定缓存（默认 {@link DecisionCache#NONE}）。与坐标陈旧策略共用同一个 {@link DecisionCachePolicy}。 */
+    private final DecisionCache cache;
+    private final DecisionCachePolicy cachePolicy;
 
     private Facet(Builder b) {
         this.schema = b.schema;
@@ -64,6 +74,8 @@ public final class Facet {
         this.maxNodes = b.maxNodes;
         this.maxDepth = b.maxDepth;
         this.deadline = b.deadline;
+        this.cache = b.cache;
+        this.cachePolicy = new DecisionCachePolicy(b.cache, b.revisions, b.staleness);
     }
 
     /** 单点判定：{@code subject} 能不能对 {@code object} 做 {@code relation}（读最新）。 */
@@ -71,10 +83,27 @@ public final class Facet {
         return checkAt(subject, object, relation, Revision.HEAD);
     }
 
-    /** 单点判定：在给定坐标 {@code at} 上求值。 */
+    /**
+     * 单点判定：在给定坐标 {@code at} 上求值。
+     *
+     * <p>若装了缓存，带具体坐标（或钉到陈旧坐标的 HEAD）的请求会先查缓存；命中直接返回结论，
+     * 不重算。缓存命中返回的结论不含完整判定树（与 PDP 行为一致：判定树不缓存）。
+     */
     public Decision checkAt(SubjectRef subject, ObjectRef object, Rel relation, Revision at) {
-        return Ctx.run(request(subject, at),
+        var resolved = cachePolicy.resolveAt(at.isHead() ? null : at.value());
+        var key = cachePolicy.cacheKey(subject, object, relation, resolved, null, false);
+        if (key != null) {
+            var hit = cache.get(key);
+            if (hit != null) {
+                return cached(hit, relation, object);
+            }
+        }
+        var decision = Ctx.run(request(subject, resolved),
                 () -> checker.check(object, relation));
+        if (key != null) {
+            cache.put(key, decision.allowed());
+        }
+        return decision;
     }
 
     /**
@@ -87,10 +116,38 @@ public final class Facet {
         return checkAllAt(subject, objects, relation, Revision.HEAD);
     }
 
+    /**
+     * 批量判定：在给定坐标 {@code at} 上求值。整批共享一次 {@code Ctx}，结果与入参同序。
+     *
+     * <p>带具体坐标的请求先查缓存，命中的那部分连属性预取都省掉；未命中的仍共享同一次求值。
+     */
     public SequencedMap<ObjectRef, Decision> checkAllAt(
             SubjectRef subject, Collection<ObjectRef> objects, Rel relation, Revision at) {
-        return Ctx.run(request(subject, at),
-                () -> checker.checkAll(objects, relation));
+        var resolved = cachePolicy.resolveAt(at.isHead() ? null : at.value());
+        var answers = new LinkedHashMap<ObjectRef, Decision>();
+        var pending = new ArrayList<ObjectRef>();
+        for (var object : objects) {
+            var key = cachePolicy.cacheKey(subject, object, relation, resolved, null, false);
+            var hit = key == null ? null : cache.get(key);
+            if (hit != null) {
+                answers.put(object, cached(hit, relation, object));
+            } else {
+                pending.add(object);
+            }
+        }
+        if (!pending.isEmpty()) {
+            var decisions = Ctx.run(request(subject, resolved),
+                    () -> checker.checkAll(pending, relation));
+            for (var object : pending) {
+                var decision = decisions.get(object);
+                answers.put(object, decision);
+                var key = cachePolicy.cacheKey(subject, object, relation, resolved, null, false);
+                if (key != null) {
+                    cache.put(key, decision.allowed());
+                }
+            }
+        }
+        return answers;
     }
 
     /**
@@ -130,6 +187,12 @@ public final class Facet {
         return new Builder(schema);
     }
 
+    /** 缓存命中：结论为真，但判定树已丢（与 PDP 一致）。用叶子节点近似表达 allow / deny。 */
+    private static Decision cached(boolean allowed, Rel relation, ObjectRef object) {
+        return new Decision(allowed,
+                allowed ? new Explain.Hit(relation, object) : new Explain.Miss(relation, object));
+    }
+
     /** 按本次调用的主体与坐标，套上引擎级的默认值，造出一份请求上下文。 */
     private Ctx.Request request(SubjectRef principal, Revision at) {
         var req = Ctx.Request.of(principal).at(at).withMetrics(metrics);
@@ -156,6 +219,9 @@ public final class Facet {
         private int maxNodes = Ctx.DEFAULT_MAX_NODES;
         private int maxDepth = Ctx.DEFAULT_MAX_DEPTH;
         private Duration deadline = Duration.ZERO;
+        private DecisionCache cache = DecisionCache.NONE;
+        private RevisionSource revisions = RevisionSource.NONE;
+        private Duration staleness = Duration.ZERO;
 
         private Builder(Schema schema) {
             if (schema == null) {
@@ -203,12 +269,37 @@ public final class Facet {
             return this;
         }
 
+        /** 接上判定缓存：只有带具体坐标的请求会被缓存。默认不缓存。 */
+        public Builder withCache(DecisionCache sink) {
+            this.cache = sink;
+            return this;
+        }
+
+        /**
+         * 接受有界陈旧：读 HEAD 的请求因此也能进缓存（钉到略旧但新鲜的坐标上）。
+         *
+         * <p>代价是有界陈旧——窗内的新授权看不到、撤销仍生效。必须由调用方明确接受，且存储必须
+         * 声明 {@code snapshotRead}（钉住坐标读需要快照读能力），否则 {@link #build()} 抛错。
+         */
+        public Builder withStaleness(RevisionSource source, Duration window) {
+            this.revisions = source;
+            this.staleness = window;
+            return this;
+        }
+
         public Facet build() {
             if (tuples == null) {
                 throw new IllegalArgumentException("必须提供 TupleSource");
             }
             if (attrs == null) {
                 throw new IllegalArgumentException("必须提供 AttrSource");
+            }
+            if (staleness.isNegative()) {
+                throw new IllegalArgumentException("陈旧窗口不能为负");
+            }
+            if (!staleness.isZero() && !tuples.caps().snapshotRead()) {
+                throw new IllegalArgumentException(
+                        "配置了陈旧窗口，但存储未声明 snapshotRead：钉住坐标读需要快照读能力");
             }
             return new Facet(this);
         }

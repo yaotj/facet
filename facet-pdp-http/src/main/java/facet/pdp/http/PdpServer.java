@@ -20,6 +20,7 @@ import facet.core.spi.PlanExecutor;
 import facet.core.spi.TupleSource;
 import facet.core.spi.DecisionCache;
 import facet.core.spi.RevisionSource;
+import facet.core.spi.DecisionCachePolicy;
 import facet.pdp.http.ports.Policy;
 
 import java.io.IOException;

@@ -1,11 +1,9 @@
-package facet.pdp.http;
+package facet.core.spi;
 
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
-import facet.core.spi.DecisionCache;
-import facet.core.spi.RevisionSource;
 
 import java.time.Duration;
 import java.util.Map;
@@ -15,9 +13,12 @@ import java.util.Map;
  *
  * <p>两个职责都围着"在哪个坐标上、要不要缓存"转：{@link #cacheKey} 决定一条请求能不能进缓存，
  * {@link #resolveAt} 决定读 HEAD 时钉到哪个略微陈旧但新鲜的坐标上。两者共享同一组可选能力，
- * 且 {@code resolveAt} 维护的钉点水位是带状态的服务端字段，所以做成有状态的实例而不是静态工具。
+ * 且 {@code resolveAt} 维护的钉点水位是带状态的服务端/进程内字段，所以做成有状态的实例而不是静态工具。
+ *
+ * <p>放在 {@code facet.core.spi}：HTTP 服务（{@code facet-pdp-http}）与进程内门面（{@code facet-sdk}）
+ * 共用同一套键计算与坐标陈旧语义，不再各写一套。
  */
-final class DecisionCachePolicy {
+public final class DecisionCachePolicy {
 
     private final DecisionCache cache;
     private final RevisionSource revisions;
@@ -25,7 +26,7 @@ final class DecisionCachePolicy {
     /** 钉住的坐标水位。volatile 就够：过期重取是幂等的，多取一次只是多一次水位查询。 */
     private volatile Pinned pinned;
 
-    DecisionCachePolicy(DecisionCache cache, RevisionSource revisions, Duration staleness) {
+    public DecisionCachePolicy(DecisionCache cache, RevisionSource revisions, Duration staleness) {
         this.cache = cache;
         this.revisions = revisions;
         this.staleness = staleness;
@@ -37,7 +38,7 @@ final class DecisionCachePolicy {
      * <p>请求给了坐标就用它；没给则看是否配置了陈旧窗口——配了就钉到一个刷新过的水位上。
      * 钉住的坐标同时是缓存键与求值坐标，两者必须一致，否则缓存里存的是另一个世界的答案。
      */
-    Revision resolveAt(Long requested) {
+    public Revision resolveAt(Long requested) {
         if (requested != null) {
             return new Revision(requested);
         }
@@ -58,9 +59,9 @@ final class DecisionCachePolicy {
     }
 
     /** @return 缓存键；不可缓存时返回 {@code null} */
-    DecisionCache.Key cacheKey(SubjectRef subject, ObjectRef object, Rel relation,
-                               Revision at, Map<String, Object> contextAttrs,
-                               boolean wantExplain) {
+    public DecisionCache.Key cacheKey(SubjectRef subject, ObjectRef object, Rel relation,
+                                   Revision at, Map<String, Object> contextAttrs,
+                                   boolean wantExplain) {
         if (cache == DecisionCache.NONE || at.isHead() || wantExplain) {
             return null;
         }

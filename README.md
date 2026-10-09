@@ -5,7 +5,7 @@ Java 25 的授权内核。把"这个人能不能做这件事"从业务代码里�
 不是框架，没有运行时依赖。内核模块 `facet-core` 的 `module-info.java` 里一个 `requires` 都没有。
 
 ```
-io.github.yaotj:facet-core:4.0.0
+io.github.yaotj:facet-core:4.1.0
 ```
 
 > **稳定性承诺（自 4.0.0 起）**：公开 API 遵循[语义化版本](https://semver.org/lang/zh-CN/)。

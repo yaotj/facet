@@ -33,9 +33,10 @@ conformance 测试套件、runnable 示例、多租户 namespace 示例。
 
 - **框架无关 SDK（已落地 `facet-sdk`）**：封装 `Ctx.run`、装求值器、给 `check` / `checkAll` /
   `lookup` / `whoCan` 四个贴合场景的方法。缓存类型 `DecisionCache` / `RevisionSource` 已搬进
-  `facet.core.spi`（见阶段 0），HTTP 服务与 SDK 现在共享同一套缓存语义。下一步：
-  - **让 `facet-sdk` 接上缓存**：`Facet` 门面目前每次判定都实算，应支持注入 `DecisionCache` /
-    `RevisionSource`，复用内核那套带坐标的键计算，而不是在 SDK 里另写一套。
+  `facet.core.spi`（见阶段 0），HTTP 服务与 SDK 现在共享同一套缓存语义。
+  - **`facet-sdk` 已接缓存（4.1.0）**：`Facet.Builder` 新增 `withCache(DecisionCache)` /
+    `withStaleness(RevisionSource, Duration)`。键计算与坐标陈旧策略抽成 `facet.core.spi.DecisionCachePolicy`，
+    HTTP 服务与 SDK 共用，不再各写一套；不带坐标且不配陈旧的请求不进缓存（命中不含判定树，与 PDP 一致）。
 - **Spring Boot Starter**：自动装 `Facet` Bean，把 `TupleSource` / `AttrSource` / `PlanExecutor`
   接成配置属性，提供类型安全的判定客户端与 `@PreAuthorize` 风格的注解。
 - **Quarkus 扩展**：同上，走 Quarkus 的 bean 发现与配置体系。
