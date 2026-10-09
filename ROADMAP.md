@@ -4,7 +4,7 @@
 `README.md` 的自陈一致：测试断言的是语义正确性与跨实现一致性，但「手写 schema 啰嗦不啰嗦」、
 「`Ctx.run` 包在业务代码里别不别扭」这类问题只有真实接入才暴露。
 
-当前家底（2026-10-07，3.0.0 已发布到 Maven Central）：
+当前家底（2026-10-07，4.0.0 为第一条稳定线、API 冻结）：
 
 - 内核 `facet-core`：ACL/RBAC/ABAC/ReBAC 编译到同一份 `Perm` IR；`module-info` 零三方依赖。
 - 驱动侧：`facet-pdp-http`（HTTP 服务）+ 新增的 `facet-sdk`（进程内门面）。
@@ -17,26 +17,25 @@ conformance 测试套件、runnable 示例、多租户 namespace 示例。
 
 ---
 
-## 阶段 0 — 冻结 API 的裁决（最紧迫）
+## 阶段 0 — 冻结 API（已裁决：4.0.0 作稳定线）
 
-3.0.0 已经做了一次破坏性重排，理由是「尚无外部用户、成本最低」。这个窗口每开一天都在收窄。
+3.0.0 做了一次破坏性重排，理由是「尚无外部用户、成本最低」。窗口已收口：
 
-**待用户拍板**：还有没有「必须破」的设计？
-
-- 有 → 趁现在一次破完，发 **4.0.0 作为稳定线**（stable line），之后承诺跨 minor 兼容。
-- 没有 → 明确 3.x 起承诺 SemVer 跨 minor 兼容，并把这条写进 `README.md`。
-
-建议：先把「必须破」的收尾（见阶段 1 的缓存类型搬迁），再在 4.0.0 上冻结公开 API。
+- **裁决**：3.x 没有兼容性承诺（那是没有外部用户时用来重排 API 的阶段）；**4.0.0 起承诺 SemVer
+  跨 minor 兼容**——只增不改公开 API。完整承诺见 `README.md` 顶部「稳定性承诺」。
+- **最后一次破坏已在 4.0.0 完成**：把 `DecisionCache` / `RevisionSource` 从 `facet-pdp-http` 搬进
+  `facet.core.spi`（阶段 1 的缓存前置），让 HTTP 服务与进程内 SDK 共享同一套缓存语义。这是稳定线前的
+  最后一处破坏性变更；4.0.0 之后不再有包重定位这类 break。
 
 ## 阶段 1 — 可集成层（最高杠杆）
 
 直接回答 README 那两个「只有真实接入才暴露」的问题。
 
 - **框架无关 SDK（已落地 `facet-sdk`）**：封装 `Ctx.run`、装求值器、给 `check` / `checkAll` /
-  `lookup` / `whoCan` 四个贴合场景的方法。下一步要让它也能缓存：
-  - **把 `DecisionCache` / `RevisionSource` 从 `facet-pdp-http` 搬进 `facet.core.spi`**。
-    现在缓存与坐标陈旧策略被绑在 HTTP 模块上，进程内用法复用不了。搬完之后 HTTP 服务与 SDK
-    共享同一套缓存语义，也顺手消掉 `facet-sdk` 与 `facet-pdp-http` 里重复的键计算逻辑。
+  `lookup` / `whoCan` 四个贴合场景的方法。缓存类型 `DecisionCache` / `RevisionSource` 已搬进
+  `facet.core.spi`（见阶段 0），HTTP 服务与 SDK 现在共享同一套缓存语义。下一步：
+  - **让 `facet-sdk` 接上缓存**：`Facet` 门面目前每次判定都实算，应支持注入 `DecisionCache` /
+    `RevisionSource`，复用内核那套带坐标的键计算，而不是在 SDK 里另写一套。
 - **Spring Boot Starter**：自动装 `Facet` Bean，把 `TupleSource` / `AttrSource` / `PlanExecutor`
   接成配置属性，提供类型安全的判定客户端与 `@PreAuthorize` 风格的注解。
 - **Quarkus 扩展**：同上，走 Quarkus 的 bean 发现与配置体系。

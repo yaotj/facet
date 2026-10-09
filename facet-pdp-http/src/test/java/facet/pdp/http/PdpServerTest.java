@@ -10,6 +10,8 @@ import facet.core.ir.TupleFilter;
 import facet.core.spi.HistoryTruncatedException;
 import facet.core.spi.Metrics;
 import facet.core.spi.TupleSource;
+import facet.core.spi.DecisionCache;
+import facet.core.spi.RevisionSource;
 import facet.store.memory.MemoryAttrSource;
 import facet.store.memory.MemoryPlanExecutor;
 import facet.store.memory.MemoryTupleSource;
@@ -518,7 +520,7 @@ class PdpServerTest {
         private int clears;
 
         @Override
-        public Boolean get(Key key) {
+        public Boolean get(DecisionCache.Key key) {
             var value = delegate.get(key);
             if (value != null) {
                 hits++;
@@ -527,7 +529,7 @@ class PdpServerTest {
         }
 
         @Override
-        public void put(Key key, boolean allowed) {
+        public void put(DecisionCache.Key key, boolean allowed) {
             puts++;
             delegate.put(key, allowed);
         }

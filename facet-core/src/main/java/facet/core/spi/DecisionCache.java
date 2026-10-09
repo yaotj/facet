@@ -1,4 +1,4 @@
-package facet.pdp.http;
+package facet.core.spi;
 
 import facet.core.ir.ObjectRef;
 import facet.core.ir.Rel;
@@ -17,8 +17,7 @@ import java.util.Map;
  * 而逐条清理在关系图上做不到，一条元组变更影响哪些判定是数据决定的。
  *
  * <p>因此<strong>只有携带具体坐标的请求会被缓存</strong>。读 HEAD 的请求要么绕过缓存，
- * 要么由部署方显式接受有界陈旧（见 {@link RevisionSource} 与
- * {@code PdpServer.Config#staleness}）。库不替使用方选择陈旧度。
+ * 要么由部署方显式接受有界陈旧（见 {@link RevisionSource} 与部署方配置的陈旧窗口）。库不替使用方选择陈旧度。
  *
  * <p>另外两类请求也一律绕过：
  * <ul>
@@ -26,6 +25,9 @@ import java.util.Map;
  *       不塞进去就是缓存污染。</li>
  *   <li>要 explain 的——判定树是排查用的，缓存它没有意义还很占内存。</li>
  * </ul>
+ *
+ * <p>本类型放在 {@code facet.core.spi}：HTTP 服务（{@code facet-pdp-http}）与进程内门面
+ * （{@code facet-sdk}）共用同一套缓存与坐标陈旧语义，不再各算各的键。
  */
 public interface DecisionCache {
 

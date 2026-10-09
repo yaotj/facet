@@ -5,8 +5,13 @@ Java 25 的授权内核。把"这个人能不能做这件事"从业务代码里�
 不是框架，没有运行时依赖。内核模块 `facet-core` 的 `module-info.java` 里一个 `requires` 都没有。
 
 ```
-io.github.yaotj:facet-core:3.0.0
+io.github.yaotj:facet-core:4.0.0
 ```
+
+> **稳定性承诺（自 4.0.0 起）**：公开 API 遵循[语义化版本](https://semver.org/lang/zh-CN/)。
+> 4.0.0 是 Facet 的第一条稳定线：从它往后的每个 minor（4.1.0、4.2.0…）与 patch（4.0.1…）发布都
+> 保持二进制与源码兼容——只新增公开类型或方法，不删除、不重命名、不改签名。破坏性变更只会出现在
+> 下一条 major（5.0.0）及以后。3.x 没有兼容性承诺：那是没有外部用户时用来低成本重排 API 的阶段。
 
 ## 它解决什么
 
@@ -170,7 +175,7 @@ Ctx.run(Ctx.Request.of(alice).at(revision).withContextAttrs(Map.of("mfa", true))
 
 ```java
 PdpServer.Extras.NONE
-        .withCache(DecisionCache.bounded(10_000))
+        .withCache(facet.core.spi.DecisionCache.bounded(10_000))
         .withDeadline(Duration.ofMillis(500))
         .withMetrics(myMetrics);
 ```

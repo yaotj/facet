@@ -18,6 +18,8 @@ import facet.core.spi.AttrSource;
 import facet.core.spi.Metrics;
 import facet.core.spi.PlanExecutor;
 import facet.core.spi.TupleSource;
+import facet.core.spi.DecisionCache;
+import facet.core.spi.RevisionSource;
 import facet.pdp.http.ports.Policy;
 
 import java.io.IOException;

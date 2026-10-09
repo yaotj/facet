@@ -4,6 +4,8 @@ import facet.core.ir.ObjectRef;
 import facet.core.ir.Rel;
 import facet.core.ir.Revision;
 import facet.core.ir.SubjectRef;
+import facet.core.spi.DecisionCache;
+import facet.core.spi.RevisionSource;
 
 import java.time.Duration;
 import java.util.Map;

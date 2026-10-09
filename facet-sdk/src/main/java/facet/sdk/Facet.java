@@ -35,9 +35,9 @@ import java.util.SequencedMap;
  * 本类把内核包成进程内库。两者共享同一份内核，差别只在"请求从哪来"——这也是 README 自己承认的、
  * "只有真实接入才暴露"的 ergonomics 问题最直接的回应：接进应用不再需要手写 {@code Ctx.run}。
  *
- * <p>注意：本门面<strong>不含判定缓存</strong>。缓存与坐标陈旧策略依赖 {@code facet-pdp-http} 里的
- * {@code DecisionCache} / {@code RevisionSource}——这两个类型目前还绑在 HTTP 模块上。要让进程内用法
- * 也能缓存，应把它们搬进 {@code facet.core.spi}（见 {@code ROADMAP.md} 阶段 1）；在此之前，每次判定都实算。
+ * <p>注意：本门面<strong>不含判定缓存</strong>。缓存与坐标陈旧策略的 {@code DecisionCache} /
+ * {@code RevisionSource} 现已在 {@code facet.core.spi}（见 {@code ROADMAP.md} 阶段 1），HTTP 服务与
+ * 进程内门面共享同一套语义；但本门面接缓存是下一步工作——在此之前，每次判定都实算。
  */
 public final class Facet {
 

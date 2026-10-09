@@ -1,4 +1,4 @@
-package facet.pdp.http;
+package facet.core.spi;
 
 import facet.core.ir.Revision;
 
@@ -9,6 +9,9 @@ import facet.core.ir.Revision;
  * 代价是有界陈旧——钉住的坐标会在配置的时间窗内被复用，窗内的新授权看不到、
  * 窗内的撤销也仍然生效。这是一个必须由部署方明确接受的取舍，所以做成显式配置：
  * 不配就不缓存 HEAD，绝不默认引入陈旧。
+ *
+ * <p>本类型放在 {@code facet.core.spi}：HTTP 服务（{@code facet-pdp-http}）与进程内门面
+ * （{@code facet-sdk}）共用同一套坐标陈旧语义。
  *
  * <p>{@code PgTupleSource::head} 直接可用作实现。
  */
